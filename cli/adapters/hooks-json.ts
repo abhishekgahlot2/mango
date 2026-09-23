@@ -11,7 +11,11 @@ export function installHook(file: string, tool: string, command: string) {
   const entries: [string, string | undefined][] = [["SessionStart", "startup|resume|compact"], ["UserPromptSubmit", undefined]];
   for (const [event, matcher] of entries) {
     const list = (cfg.hooks[event] ??= []);
-    if (list.some((e) => e.hooks.some((h) => h.command.includes(`inbox --hook ${tool}`)))) continue;
+    const installed = list.flatMap((entry) => entry.hooks).filter((hook) => hook.command.includes(`inbox --hook ${tool}`));
+    if (installed.length) {
+      for (const hook of installed) hook.command = command;
+      continue;
+    }
     list.push({ ...(matcher && { matcher }), hooks: [{ type: "command", command, timeout: 10 }] });
   }
   mkdirSync(dirname(file), { recursive: true });

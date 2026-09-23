@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 process.env.MANGO_REGISTRY = require("node:path").join(require("node:os").tmpdir(), `mango-registry-${process.pid}`);
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { done, forget, harnessPid, hookText, inbox, note, send, start, status } from "./mango";
-import { readOne, type Agent, type Task } from "./store";
+import { dirname, join } from "node:path";
+import { done, forget, harnessPid, hookText, inbox, note, register, send, start, status } from "./mango";
+import { branchOf, readOne, snapshot, write, type Agent, type Task } from "./store";
 
 const fresh = () => join(mkdtempSync(join(tmpdir(), "mango-")), ".mango");
 
@@ -12,7 +12,7 @@ test("start → note → done flow", () => {
   const root = fresh();
   const t = start(root, "claude-ab12", "Fix login");
   note(root, "claude-ab12", "found the bug");
-  expect(readOne<Agent>(root, "agents", "claude-ab12")).toMatchObject({ tool: "claude", status: "working", task: t.id, cwd: process.cwd(), branch: null });
+  expect(readOne<Agent>(root, "agents", "claude-ab12")).toMatchObject({ tool: "claude", status: "working", task: t.id, cwd: process.cwd(), branch: branchOf(process.cwd()) });
   done(root, "claude-ab12", "shipped");
   expect(readOne<Task>(root, "tasks", t.id)).toMatchObject({ status: "done", log: [{ text: "found the bug" }, { text: "shipped" }] });
   expect(readOne<Agent>(root, "agents", "claude-ab12")).toMatchObject({ status: "idle", task: null });
@@ -75,14 +75,52 @@ test("harnessPid skips shells and returns a running process; forget removes the 
   expect(() => forget(root, "claude-ab12")).toThrow(/no agent/);
 });
 
-test("task writes take a lock; a stale lock from a dead writer is taken over", () => {
+test("agent names cannot escape the store", () => {
+  const root = fresh();
+  expect(() => start(root, "../outside", "x")).toThrow(/invalid agent name/);
+  expect(() => forget(root, "../../package")).toThrow(/invalid agent name/);
+});
+
+test("poisoned record fields cannot redirect a write", () => {
+  const root = fresh();
+  const victim = join(dirname(root), "victim.json");
+  start(root, "safe", "first");
+  writeFileSync(victim, "untouched");
+  writeFileSync(join(root, "agents", "safe.json"), JSON.stringify({ name: "../../victim", task: null }));
+  expect(() => register(root, "safe")).toThrow(/name mismatch/);
+  expect(readFileSync(victim, "utf8")).toBe("untouched");
+  const task = start(root, "claude-ab12", "second");
+  writeFileSync(join(root, "tasks", `${task.id}.json`), JSON.stringify({ ...task, id: "../../victim" }));
+  expect(() => note(root, "claude-ab12", "late")).toThrow(/no open task/);
+  expect(readFileSync(victim, "utf8")).toBe("untouched");
+});
+
+test("a finished task cannot be reopened by a stale agent pointer", () => {
+  const root = fresh();
+  const task = start(root, "claude-ab12", "Finish safely");
+  write(root, "tasks", task.id, { ...task, status: "done", ended: new Date().toISOString() });
+  expect(snapshot(root).agents[0]).toMatchObject({ status: "idle", task: null });
+  expect(() => note(root, "claude-ab12", "late note")).toThrow(/no open task/);
+  register(root, "claude-ab12");
+  expect(readOne<Agent>(root, "agents", "claude-ab12")).toMatchObject({ status: "idle", task: null });
+  expect(readOne<Task>(root, "tasks", task.id)).toMatchObject({ status: "done", log: [] });
+});
+
+test("task writes never steal an old lock", () => {
   const root = fresh();
   const t = start(root, "claude-ab12", "locked");
   const lock = join(root, "tasks", `.${t.id}.lock`);
   mkdirSync(lock);
   const old = new Date(Date.now() - 10_000);
   utimesSync(lock, old, old);
-  note(root, "claude-ab12", "got through");
-  expect(readOne<Task>(root, "tasks", t.id)!.log.map((l) => l.text)).toEqual(["got through"]);
-  expect(existsSync(lock)).toBe(false);
+  expect(() => note(root, "claude-ab12", "late writer")).toThrow(/locked by another writer/);
+  expect(readOne<Task>(root, "tasks", t.id)!.log).toEqual([]);
+  expect(existsSync(lock)).toBe(true);
+});
+
+test("hashtags in a title become tags", () => {
+  const root = fresh();
+  const t = start(root, "claude-ab12", "Fix login redirect #auth #Urgent");
+  expect(t).toMatchObject({ title: "Fix login redirect", tags: ["auth", "urgent"] });
+  expect(() => start(root, "claude-ab12", "#only-tags")).toThrow(/needs a title/);
 });

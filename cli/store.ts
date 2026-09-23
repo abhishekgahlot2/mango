@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -11,7 +12,7 @@ export type Agent = {
 };
 /** Agent as the board sees it: `alive` is null when no pid was ever captured; `repo` keys it across stores. */
 export type BoardAgent = Agent & { alive: boolean | null; repo: string };
-export type Task = { id: string; agent: string; title: string; status: "open" | "done"; log: { t: string; text: string }[]; started: string; ended: string | null };
+export type Task = { id: string; agent: string; title: string; tags: string[]; status: "open" | "done"; log: { t: string; text: string }[]; started: string; ended: string | null };
 export type Message = { t: string; from: string; to: string; text: string };
 export type Snapshot = {
   repos: string[];
@@ -21,6 +22,7 @@ export type Snapshot = {
 };
 
 type Kind = "agents" | "tasks" | "messages";
+export const isValidRecordName = (name: string) => /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name);
 
 function nearest(cwd: string, marker: string): string | null {
   for (let d = cwd; ; d = dirname(d)) {
@@ -61,8 +63,13 @@ export function branchOf(cwd: string): string | null {
 }
 
 export const repoName = (root: string) => basename(dirname(root));
+export function agentNameFor(tool: string, session: string | null, cwd: string): string {
+  const source = session?.slice(0, 4) ?? basename(cwd);
+  const suffix = source.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^[^a-zA-Z0-9]+/, "").slice(0, 48) || "workspace";
+  return `${tool}-${suffix}`;
+}
 export const now = () => new Date().toISOString();
-export const shortId = () => Math.random().toString(16).slice(2, 8);
+export const shortId = () => randomUUID().replaceAll("-", "").slice(0, 12);
 let seq = 0;
 /** Sortable filename for a message: ISO time, a per-process sequence (same-ms order), a nonce (cross-process). */
 export const messageName = (t: string) => `${t.replace(/[:.]/g, "-")}-${String(seq++).padStart(4, "0")}-${shortId()}`;
@@ -83,6 +90,7 @@ function registerRoot(root: string) {
 }
 
 export function write(root: string, kind: Kind, name: string, data: unknown) {
+  if (!isValidRecordName(name)) throw new Error(`invalid record name: ${name}`);
   const dir = join(root, kind);
   mkdirSync(dir, { recursive: true });
   registerRoot(root);
@@ -92,6 +100,7 @@ export function write(root: string, kind: Kind, name: string, data: unknown) {
 }
 
 export function readOne<T>(root: string, kind: Kind, name: string): T | null {
+  if (!isValidRecordName(name)) throw new Error(`invalid record name: ${name}`);
   const p = join(root, kind, `${name}.json`);
   if (!existsSync(p)) return null;
   return JSON.parse(readFileSync(p, "utf8")) as T;
@@ -125,14 +134,19 @@ export function isRunning(pid: number): boolean {
 
 export function snapshot(root: string): Snapshot {
   const repo = repoName(root);
+  const tasks = readAll<Partial<Task>>(root, "tasks").map((t) => ({ tags: [], ...t.data, repo }) as Task & { repo: string });
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
   return {
     repos: [repo],
     // Records may predate a field or be hand-edited; fill defaults so the board never trips on a missing key.
     agents: readAll<Partial<Agent>>(root, "agents").map((a) => {
       const agent = { cwd: "", branch: null, session: null, pid: null, ...a.data } as Agent;
-      return { ...agent, alive: agent.pid ? isRunning(agent.pid) : null, repo };
+      const current = agent.task && taskById.get(agent.task);
+      const coherent = agent.task && (!current || current.status !== "open" || current.agent !== agent.name)
+        ? { ...agent, task: null, status: "idle" as const } : agent;
+      return { ...coherent, alive: agent.pid ? isRunning(agent.pid) : null, repo };
     }),
-    tasks: readAll<Task>(root, "tasks").map((t) => ({ ...t.data, repo })),
+    tasks,
     messages: readAll<Message>(root, "messages").map((m) => ({ ...m.data, id: m.name, repo })).slice(-500),
   };
 }

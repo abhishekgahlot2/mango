@@ -31,10 +31,15 @@ test("hooks-json install merges both events once and keeps existing hooks", () =
   expect(cfg.hooks.SessionStart).toHaveLength(1);
   expect(cfg.hooks.SessionStart[0].matcher).toBe("startup|resume|compact");
   expect(cfg.hooks.UserPromptSubmit[0].hooks[0].command).toMatch(/inbox --hook claude$/);
+  installHook(f, "claude", "bun /installed/dist/cli.js inbox --hook claude");
+  const migrated = JSON.parse(readFileSync(f, "utf8"));
+  expect(migrated.hooks.SessionStart).toHaveLength(1);
+  expect(migrated.hooks.SessionStart[0].hooks[0].command).toBe("bun /installed/dist/cli.js inbox --hook claude");
+  expect(migrated.hooks.UserPromptSubmit[0].hooks[0].command).toBe("bun /installed/dist/cli.js inbox --hook claude");
 });
 
 test("opencode install appends one mango section to AGENTS.md", () => {
-  const repo = mkdtempSync(join(tmpdir(), "mango-oc-"));
+  const repo = mkdtempSync(join(tmpdir(), "mango oc-"));
   writeFileSync(join(repo, "AGENTS.md"), "# Rules\n");
   const first = opencode.install(repo, { global: false, command: "bun mango.ts inbox --hook opencode" });
   const again = opencode.install(repo, { global: false, command: "bun mango.ts inbox --hook opencode" });
@@ -43,5 +48,5 @@ test("opencode install appends one mango section to AGENTS.md", () => {
   expect(again).toMatch(/already/);
   expect(md.startsWith("# Rules\n")).toBe(true);
   expect(md.match(/## mango/g)).toHaveLength(1);
-  expect(md).toContain("--as opencode-");
+  expect(md).toContain("--as opencode-mango-oc-");
 });

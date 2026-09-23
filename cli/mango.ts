@@ -1,19 +1,30 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync, rmdirSync, statSync, unlinkSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { existsSync, mkdirSync, rmdirSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { ADAPTERS, adapterFor, toolOf } from "./adapters";
-import { branchOf, findRoot, messageName, now, readAll, readOne, repoName, shortId, write, type Agent, type Message, type Status, type Task } from "./store";
+import { agentNameFor, branchOf, findRoot, isValidRecordName, messageName, now, readAll, readOne, repoName, shortId, write, type Agent, type Message, type Status, type Task } from "./store";
 
 /** How agents invoke mango. `bunx mango` once published; the local file until then. */
-const CMD = process.env.MANGO_CMD ?? `bun ${import.meta.path}`;
+const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+const CMD = process.env.MANGO_CMD ?? `bun ${shellQuote(import.meta.path)}`;
 
 /** Where the calling agent runs; hook mode overrides this from the harness's stdin. */
 export let meta: { cwd: string; session: string | null; pid: number | null } = { cwd: process.cwd(), session: null, pid: null };
 export const setMeta = (m: typeof meta) => { meta = m; };
 
-const agent = (root: string, name: string): Agent =>
-  readOne<Agent>(root, "agents", name) ??
-  { name, tool: toolOf(name), status: "idle", task: null, updated: now(), inbox_cursor: "", cwd: meta.cwd, branch: null, session: null, pid: null };
+function assertAgentName(name: string): void {
+  if (!isValidRecordName(name)) throw new Error(`invalid agent name: ${name}`);
+}
+
+const agent = (root: string, name: string): Agent => {
+  assertAgentName(name);
+  const saved = readOne<Agent>(root, "agents", name);
+  if (!saved) return { name, tool: toolOf(name), status: "idle", task: null, updated: now(), inbox_cursor: "", cwd: meta.cwd, branch: null, session: null, pid: null };
+  if (saved.name !== name) throw new Error(`agent record name mismatch: ${name}`);
+  if (!saved.task) return saved;
+  const task = readOne<Task>(root, "tasks", saved.task);
+  return task?.id === saved.task && task.agent === name && task.status === "open" ? saved : { ...saved, status: "idle", task: null };
+};
 const save = (root: string, a: Agent) =>
   write(root, "agents", a.name, {
     ...a, cwd: meta.cwd, branch: branchOf(meta.cwd), session: meta.session ?? a.session, pid: meta.pid ?? a.pid, updated: now(),
@@ -37,85 +48,112 @@ export function harnessPid(names: string[] = []): number | null {
 }
 
 export function forget(root: string, name: string) {
-  const p = join(root, "agents", `${name}.json`);
-  if (!existsSync(p)) throw new Error(`no agent named ${name}`);
-  unlinkSync(p);
+  assertAgentName(name);
+  withAgentLock(root, name, () => {
+    const p = join(root, "agents", `${name}.json`);
+    if (!existsSync(p)) throw new Error(`no agent named ${name}`);
+    unlinkSync(p);
+  });
 }
 
-/** Serialise read-modify-write on one task file across processes: an atomic mkdir is the lock.
- *  A lock older than 5s is assumed abandoned (crashed writer) and taken over. */
-export function withTaskLock<T>(root: string, id: string, fn: () => T): T {
-  const lock = join(root, "tasks", `.${id}.lock`);
-  mkdirSync(join(root, "tasks"), { recursive: true });
+/** Serialise record mutations across processes. */
+function withLock<T>(root: string, kind: "agents" | "tasks", id: string, fn: () => T): T {
+  if (!isValidRecordName(id)) throw new Error(`invalid record name: ${id}`);
+  const dir = join(root, kind);
+  const lock = join(dir, `.${id}.lock`);
+  mkdirSync(dir, { recursive: true });
   for (let i = 0; ; i++) {
     try { mkdirSync(lock); break; } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      try { if (Date.now() - statSync(lock).mtimeMs > 5_000) { rmdirSync(lock); continue; } } catch { continue; }
-      if (i > 200) throw new Error(`task ${id} is locked by another writer (remove ${lock} if that writer is gone)`);
+      // ponytail: fail on a stale lock rather than steal a live writer's lock; add owner-verified leases if crash recovery is needed.
+      if (i >= 50) throw new Error(`${kind}/${id} is locked by another writer (remove ${lock} only if that writer is gone)`);
       Bun.sleepSync(10);
     }
   }
   try { return fn(); } finally { try { rmdirSync(lock); } catch { /* already gone */ } }
 }
+export const withTaskLock = <T>(root: string, id: string, fn: () => T) => withLock(root, "tasks", id, fn);
+const withAgentLock = <T>(root: string, name: string, fn: () => T) => withLock(root, "agents", name, fn);
 
 function openTask(root: string, a: Agent): Task {
   const t = a.task && readOne<Task>(root, "tasks", a.task);
-  if (!t) throw new Error(`${a.name} has no open task; run start first`);
+  if (!t || t.id !== a.task || t.agent !== a.name || t.status !== "open") throw new Error(`${a.name} has no open task; run start first`);
   return t;
 }
 
 export function register(root: string, name: string) {
-  save(root, agent(root, name));
+  assertAgentName(name);
+  withAgentLock(root, name, () => save(root, agent(root, name)));
 }
 
-/** `start "title"` opens a new task and makes it current; `start t-xxxxxx` switches to one of the agent's open tasks.
+/** `#tags` anywhere in a title become the task's tags; the title keeps the rest. */
+export function parseTitle(raw: string): { title: string; tags: string[] } {
+  const tags = [...new Set([...raw.matchAll(/(?:^|\s)#([\w-]+)/g)].map((m) => m[1].toLowerCase()))];
+  return { title: raw.replace(/(?:^|\s)#[\w-]+/g, "").replace(/\s+/g, " ").trim(), tags };
+}
+
+/** `start "title #tag"` opens a new task and makes it current; `start t-id` switches to one of the agent's open tasks.
  *  Other open tasks stay queued on the card. */
 export function start(root: string, name: string, titleOrId: string): Task {
-  const a = agent(root, name);
-  const existing = /^t-[0-9a-f]{6}$/.test(titleOrId) ? readOne<Task>(root, "tasks", titleOrId) : null;
-  if (existing) {
-    if (existing.agent !== name || existing.status !== "open") throw new Error(`${titleOrId} is not an open task of ${name}`);
-    save(root, { ...a, status: "working", task: existing.id });
-    return existing;
-  }
-  const t: Task = { id: `t-${shortId()}`, agent: name, title: titleOrId, status: "open", log: [], started: now(), ended: null };
-  write(root, "tasks", t.id, t);
-  save(root, { ...a, status: "working", task: t.id });
-  return t;
+  assertAgentName(name);
+  return withAgentLock(root, name, () => {
+    const a = agent(root, name);
+    const existing = /^t-[0-9a-f]{6,12}$/.test(titleOrId) ? readOne<Task>(root, "tasks", titleOrId) : null;
+    if (existing) {
+      if (existing.id !== titleOrId || existing.agent !== name || existing.status !== "open") throw new Error(`${titleOrId} is not an open task of ${name}`);
+      save(root, { ...a, status: "working", task: existing.id });
+      return existing;
+    }
+    const { title, tags } = parseTitle(titleOrId);
+    if (!title) throw new Error("a task needs a title");
+    const t: Task = { id: `t-${shortId()}`, agent: name, title, tags, status: "open", log: [], started: now(), ended: null };
+    write(root, "tasks", t.id, t);
+    save(root, { ...a, status: "working", task: t.id });
+    return t;
+  });
 }
 
 export function note(root: string, name: string, text: string) {
-  const a = agent(root, name);
-  if (!a.task) throw new Error(`${name} has no open task; run start first`);
-  withTaskLock(root, a.task, () => {
-    const t = openTask(root, a);
-    t.log.push({ t: now(), text });
-    write(root, "tasks", t.id, t);
+  assertAgentName(name);
+  withAgentLock(root, name, () => {
+    const a = agent(root, name);
+    if (!a.task) throw new Error(`${name} has no open task; run start first`);
+    withTaskLock(root, a.task, () => {
+      const t = openTask(root, a);
+      t.log.push({ t: now(), text });
+      write(root, "tasks", t.id, t);
+    });
+    save(root, a);
   });
-  save(root, a);
 }
 
 export function done(root: string, name: string, text?: string) {
-  const a = agent(root, name);
-  if (!a.task) throw new Error(`${name} has no open task; run start first`);
-  withTaskLock(root, a.task, () => {
-    const t = openTask(root, a);
-    if (text) t.log.push({ t: now(), text });
-    write(root, "tasks", t.id, { ...t, status: "done", ended: now() });
+  assertAgentName(name);
+  withAgentLock(root, name, () => {
+    const a = agent(root, name);
+    if (!a.task) throw new Error(`${name} has no open task; run start first`);
+    withTaskLock(root, a.task, () => {
+      const t = openTask(root, a);
+      if (text) t.log.push({ t: now(), text });
+      write(root, "tasks", t.id, { ...t, status: "done", ended: now() });
+    });
+    save(root, { ...a, status: "idle", task: null });
   });
-  save(root, { ...a, status: "idle", task: null });
 }
 
 export function status(root: string, name: string, s: Status, why?: string) {
-  const a = agent(root, name);
-  if (why && a.task) {
-    withTaskLock(root, a.task, () => {
-      const t = openTask(root, a);
-      t.log.push({ t: now(), text: `${s}: ${why}` });
-      write(root, "tasks", t.id, t);
-    });
-  }
-  save(root, { ...a, status: s });
+  assertAgentName(name);
+  withAgentLock(root, name, () => {
+    const a = agent(root, name);
+    if (why && a.task) {
+      withTaskLock(root, a.task, () => {
+        const t = openTask(root, a);
+        t.log.push({ t: now(), text: `${s}: ${why}` });
+        write(root, "tasks", t.id, t);
+      });
+    }
+    save(root, { ...a, status: s });
+  });
 }
 
 export function send(root: string, from: string, to: string, text: string) {
@@ -125,25 +163,28 @@ export function send(root: string, from: string, to: string, text: string) {
 
 /** Unread messages for `name`; advances the cursor unless peeking. */
 export function inbox(root: string, name: string, peek = false): Message[] {
-  const a = agent(root, name);
-  const unread = readAll<Message>(root, "messages").filter(
-    (m) => m.name > a.inbox_cursor && m.data.from !== name && (m.data.to === name || m.data.to === "*"),
-  );
-  if (!peek && unread.length) save(root, { ...a, inbox_cursor: unread.at(-1)!.name });
-  return unread.map((m) => m.data);
+  assertAgentName(name);
+  return withAgentLock(root, name, () => {
+    const a = agent(root, name);
+    const unread = readAll<Message>(root, "messages").filter(
+      (m) => m.name > a.inbox_cursor && m.data.from !== name && (m.data.to === name || m.data.to === "*"),
+    );
+    if (!peek && unread.length) save(root, { ...a, inbox_cursor: unread.at(-1)!.name });
+    return unread.map((m) => m.data);
+  });
 }
 
 const hhmm = (iso: string) => new Date(iso).toTimeString().slice(0, 5);
 
 /** What an agent sees at the top of a turn. `full` adds identity + commands (session start). */
 export function hookText(root: string, name: string, full: boolean): string {
+  register(root, name); // last-seen + pid on every turn, so liveness never relies on message traffic
   const a = agent(root, name);
   const lines: string[] = [];
   if (full) {
-    register(root, name);
     lines.push(
       `[mango] You are "${name}" in repo ${repoName(root)}. Report what you work on:`,
-      `  ${CMD} --as ${name} start "task title" | start t-id | note "what you did" | done "summary" | status blocked "why" | send <agent|*> "text"`,
+      `  ${CMD} --as ${name} start "task title #tag" | start t-id | note "what you did" | done "summary" | status blocked "why" | send <agent|*> "text"`,
     );
     const t = a.task && readOne<Task>(root, "tasks", a.task);
     if (t) lines.push(`[mango] Current task ${t.id}: ${t.title} (${a.status})`);
@@ -157,7 +198,7 @@ export function hookText(root: string, name: string, full: boolean): string {
 }
 
 const USAGE = `mango — agents self-report; you watch.
-  mango --as <name> start "title"|t-id | note "text" | done ["text"] | status working|blocked|idle ["why"]
+  mango --as <name> start "title #tag"|t-id | note "text" | done ["text"] | status working|blocked|idle ["why"]
   mango --as <name> send <agent|*> "text" | inbox [--peek]
   mango agents | forget <name> | hook <claude|codex|opencode> [--project] | serve [--port 4321]
 Identity: --as <name> or MANGO_AGENT. Names like claude-ab12 set the tool glyph.`;
@@ -187,7 +228,7 @@ async function main(argv: string[]) {
     const adapter = adapterFor(flags.hook);
     const { session, cwd, full } = adapter.parseHookInput(await Bun.stdin.text(), process.cwd());
     setMeta({ cwd, session, pid: harnessPid(adapter.processNames) });
-    const name = `${adapter.tool}-${session?.slice(0, 4) ?? basename(cwd)}`;
+    const name = agentNameFor(adapter.tool, session, cwd);
     const out = hookText(findRoot(cwd), name, full);
     if (out) console.log(out);
     return;

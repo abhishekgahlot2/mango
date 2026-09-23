@@ -8,13 +8,25 @@ import { knownRoots, registryPath, snapshotAll } from "./store";
 export function serve(root: string, port: number) {
   const dist = join(import.meta.dir, "..", "dist");
   const clients = new Set<ReadableStreamDefaultController<Uint8Array>>();
-  const activityClients = new Set<ReadableStreamDefaultController<Uint8Array>>();
+  const activityClients = new Map<ReadableStreamDefaultController<Uint8Array>, string | null>(); // controller → agent key filter
   const enc = new TextEncoder();
   const watched = new Set<string>();
 
   const roots = () => [...new Set([root, ...knownRoots()])];
   const frame = () => enc.encode(`data: ${JSON.stringify(snapshotAll(roots()))}\n\n`);
-  const activityFrame = () => enc.encode(`data: ${JSON.stringify({ events: activityEvents(snapshotAll(roots()).agents) })}\n\n`);
+  const activityFrames = () => {
+    const all = activityEvents(snapshotAll(roots()).agents);
+    const byKey = new Map<string | null, Uint8Array>();
+    return (key: string | null) => {
+      if (!byKey.has(key)) {
+        const events = (key ? all.filter((e) => `${e.repo}/${e.agent}` === key) : all).slice(-300);
+        byKey.set(key, enc.encode(`data: ${JSON.stringify({ events })}
+
+`));
+      }
+      return byKey.get(key)!;
+    };
+  };
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const broadcast = () => {
@@ -47,15 +59,16 @@ export function serve(root: string, port: number) {
     }
   }, 20_000);
 
-  let lastActivity = "";
+  // One transcript scan per tick; each subscriber gets only its agent's events, and only when they changed.
+  const lastSent = new Map<ReadableStreamDefaultController<Uint8Array>, Uint8Array>();
   setInterval(() => {
     if (!activityClients.size) return;
-    const frame = activityFrame();
-    const current = new TextDecoder().decode(frame);
-    if (current === lastActivity) return;
-    lastActivity = current;
-    for (const c of activityClients) {
-      try { c.enqueue(frame); } catch { activityClients.delete(c); }
+    const frameFor = activityFrames();
+    for (const [c, key] of activityClients) {
+      const frame = frameFor(key);
+      if (lastSent.get(c) === frame) continue;
+      lastSent.set(c, frame);
+      try { c.enqueue(frame); } catch { activityClients.delete(c); lastSent.delete(c); }
     }
   }, 500);
 
@@ -75,10 +88,11 @@ export function serve(root: string, port: number) {
         return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } });
       }
       if (pathname === "/api/activity") {
+        const key = new URL(req.url).searchParams.get("agent"); // "repo/name", or everything
         let ctrl: ReadableStreamDefaultController<Uint8Array>;
         const stream = new ReadableStream<Uint8Array>({
-          start(c) { ctrl = c; activityClients.add(c); c.enqueue(activityFrame()); },
-          cancel() { activityClients.delete(ctrl); },
+          start(c) { ctrl = c; activityClients.set(c, key); c.enqueue(activityFrames()(key)); },
+          cancel() { activityClients.delete(ctrl); lastSent.delete(ctrl); },
         });
         return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } });
       }

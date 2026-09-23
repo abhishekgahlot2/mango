@@ -1,9 +1,10 @@
 import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import type { BoardAgent } from "./store";
+import { isAbsolute, join } from "node:path";
+import { isValidRecordName, type BoardAgent } from "./store";
 
 export type ActivityEvent = { id: string; t: string; repo: string; agent: string; kind: string; text: string };
+export const projectDirName = (cwd: string) => cwd.replace(/[\\/:]/g, "-");
 
 const TAIL_BYTES = 2 * 1024 * 1024;
 const cache = new Map<string, { size: number; mtimeMs: number; events: ActivityEvent[] }>();
@@ -76,7 +77,8 @@ export function parseCodexActivityLine(line: string, agent: BoardAgent): Activit
 }
 
 function claudeTranscript(agent: BoardAgent, claudeRoot: string): string | null {
-  const dir = join(claudeRoot, agent.cwd.replaceAll("/", "-"));
+  if (!isAbsolute(agent.cwd) || (agent.session && !isValidRecordName(agent.session))) return null;
+  const dir = join(claudeRoot, projectDirName(agent.cwd));
   if (!existsSync(dir)) return null;
   if (agent.session) {
     const exact = join(dir, `${agent.session}.jsonl`);
@@ -91,7 +93,7 @@ function claudeTranscript(agent: BoardAgent, claudeRoot: string): string | null 
 }
 
 function codexTranscript(agent: BoardAgent, codexRoot: string): string | null {
-  if (!agent.session) return null;
+  if (!agent.session || !isValidRecordName(agent.session)) return null;
   const dates = [new Date(agent.updated), new Date()];
   for (const date of dates) {
     for (const offset of [-1, 0, 1]) {
@@ -127,8 +129,8 @@ function readTail(path: string, agent: BoardAgent, parse: typeof parseActivityLi
 
 export function activityEvents(
   agents: BoardAgent[],
-  claudeRoot = join(homedir(), ".claude", "projects"),
-  codexRoot = join(homedir(), ".codex", "sessions"),
+  claudeRoot = process.env.MANGO_CLAUDE_PROJECTS ?? join(homedir(), ".claude", "projects"),
+  codexRoot = process.env.MANGO_CODEX_SESSIONS ?? join(homedir(), ".codex", "sessions"),
 ): ActivityEvent[] {
   return agents
     .filter((agent) => (agent.tool === "claude" && agent.cwd) || (agent.tool === "codex" && agent.session))

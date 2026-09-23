@@ -69,3 +69,27 @@ export function ago(iso: string, now: number): string {
   const e = elapsed(iso, now);
   return e === "now" ? "just now" : `${e} ago`;
 }
+
+/** One colour per project (BoardUI's chart ramp), handed out in name order: rail stripe, repo chip, timeline lane. */
+const RAMP = ["#0ea5e9", "#ec4899", "#a855f7", "#84cc16", "#14b8a6", "#f59e0b", "#6366f1", "#f43f5e"];
+export function repoColors(repos: string[]): Map<string, string> {
+  return new Map(repos.toSorted().map((r, i) => [r, RAMP[i % RAMP.length]]));
+}
+
+export type ActivityEvent = { id: string; t: string; repo: string; agent: string; kind: string; text: string };
+
+/** Transcript activity for one agent (`repo/name`), streamed from `/api/activity`; the server filters, so many agents cost nothing extra. */
+export function useActivity(key: string | null): ActivityEvent[] {
+  const [events, setEvents] = useState<ActivityEvent[]>([]);
+  useEffect(() => {
+    setEvents([]);
+    if (!key) return;
+    const es = new EventSource(`/api/activity?agent=${encodeURIComponent(key)}`);
+    es.onmessage = (e) => setEvents((JSON.parse(e.data) as { events: ActivityEvent[] }).events);
+    return () => es.close();
+  }, [key]);
+  return events;
+}
+
+export const shortPath = (p: string) => p.replace(/^\/(Users|home)\/[^/]+/, "~");
+export const isEnded = (a: BoardAgent, now: number) => a.alive === false || (a.alive === null && now - Date.parse(a.updated) > 3_600_000);

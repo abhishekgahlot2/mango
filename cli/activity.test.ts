@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { activityEvents, parseActivityLine, parseCodexActivityLine } from "./activity";
+import { join, win32 } from "node:path";
+import { activityEvents, parseActivityLine, parseCodexActivityLine, projectDirName } from "./activity";
 import type { BoardAgent } from "./store";
 
 const agent: BoardAgent = {
@@ -29,6 +29,23 @@ test("finds a legacy Claude session by agent-name prefix", () => {
     uuid: "u2", timestamp: "2026-09-23T18:02:00.000Z", type: "user", message: { content: "ship it" },
   }) + "\n");
   expect(activityEvents([agent], root)).toMatchObject([{ agent: "claude-c6d2", kind: "user", text: "ship it" }]);
+});
+
+test("a poisoned session cannot read outside its transcript directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "mango-activity-"));
+  const dir = join(root, "-tmp-a2a");
+  mkdirSync(dir);
+  writeFileSync(join(root, "secret.jsonl"), JSON.stringify({
+    uuid: "leak", timestamp: "2026-09-23T18:02:00.000Z", type: "user", message: { content: "LEAKED" },
+  }) + "\n");
+  expect(activityEvents([{ ...agent, session: "../secret" }], root)).toEqual([]);
+  expect(activityEvents([{ ...agent, cwd: "..", session: "secret" }], root)).toEqual([]);
+});
+
+test("Windows path separators cannot escape the Claude project directory", () => {
+  const root = "C:\\Users\\me\\.claude\\projects";
+  const dir = win32.join(root, projectDirName("C:\\..\\..\\..\\secret"));
+  expect(win32.relative(root, dir).startsWith("..")).toBe(false);
 });
 
 test("reads a registered Codex session transcript", () => {

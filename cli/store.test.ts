@@ -16,6 +16,7 @@ test("write is atomic and readable; bad json is skipped", () => {
   expect(readOne<{ name: string }>(root, "agents", "a")).toEqual({ name: "a" });
   expect(readAll(root, "agents").map((r) => r.name)).toEqual(["a", "b"]);
   expect(snapshot(root).agents).toHaveLength(2);
+  expect(() => write(root, "agents", "../../outside", {})).toThrow(/invalid record name/);
 });
 
 test("message names sort by time", () => {
