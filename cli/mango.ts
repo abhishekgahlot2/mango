@@ -9,7 +9,7 @@ const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const CMD = process.env.MANGO_CMD ?? `bun ${shellQuote(import.meta.path)}`;
 
 /** Where the calling agent runs; hook mode overrides this from the harness's stdin. */
-export let meta: { cwd: string; session: string | null; pid: number | null } = { cwd: process.cwd(), session: null, pid: null };
+export let meta: { cwd: string; session: string | null; pid: number | null; hook: boolean } = { cwd: process.cwd(), session: null, pid: null, hook: false };
 export const setMeta = (m: typeof meta) => { meta = m; };
 
 function assertAgentName(name: string): void {
@@ -27,7 +27,8 @@ const agent = (root: string, name: string): Agent => {
 };
 const save = (root: string, a: Agent) =>
   write(root, "agents", a.name, {
-    ...a, cwd: meta.cwd, branch: branchOf(meta.cwd), session: meta.session ?? a.session, pid: meta.pid ?? a.pid, updated: now(),
+    // The hook knows the session's real directory; a CLI call may run from any subfolder, so it keeps what's recorded.
+    ...a, cwd: meta.hook || !a.cwd ? meta.cwd : a.cwd, branch: branchOf(meta.hook || !a.cwd ? meta.cwd : a.cwd), session: meta.session ?? a.session, pid: meta.pid ?? a.pid, updated: now(),
   });
 
 const SHELLS = new Set(["sh", "bash", "zsh", "fish", "bun", "node"]);
@@ -227,7 +228,7 @@ async function main(argv: string[]) {
     // Hook mode: the adapter turns the harness's stdin into identity; the name comes from the session id.
     const adapter = adapterFor(flags.hook);
     const { session, cwd, full } = adapter.parseHookInput(await Bun.stdin.text(), process.cwd());
-    setMeta({ cwd, session, pid: harnessPid(adapter.processNames) });
+    setMeta({ cwd, session, pid: harnessPid(adapter.processNames), hook: true });
     const name = agentNameFor(adapter.tool, session, cwd);
     const out = hookText(findRoot(cwd), name, full);
     if (out) console.log(out);

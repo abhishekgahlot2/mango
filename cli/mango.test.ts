@@ -3,7 +3,7 @@ process.env.MANGO_REGISTRY = require("node:path").join(require("node:os").tmpdir
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { done, forget, harnessPid, hookText, inbox, note, register, send, start, status } from "./mango";
+import { done, forget, harnessPid, hookText, inbox, note, register, send, start, status, setMeta } from "./mango";
 import { branchOf, readOne, snapshot, write, type Agent, type Task } from "./store";
 
 const fresh = () => join(mkdtempSync(join(tmpdir(), "mango-")), ".mango");
@@ -123,4 +123,14 @@ test("hashtags in a title become tags", () => {
   const t = start(root, "claude-ab12", "Fix login redirect #auth #Urgent");
   expect(t).toMatchObject({ title: "Fix login redirect", tags: ["auth", "urgent"] });
   expect(() => start(root, "claude-ab12", "#only-tags")).toThrow(/needs a title/);
+});
+
+test("a CLI write keeps the directory the hook recorded", () => {
+  const root = fresh();
+  setMeta({ cwd: "/repo", session: "s1", pid: null, hook: true });
+  start(root, "claude-ab12", "x");
+  setMeta({ cwd: "/repo/sub/dir", session: null, pid: null, hook: false });
+  note(root, "claude-ab12", "from a subfolder");
+  expect(readOne<Agent>(root, "agents", "claude-ab12")!.cwd).toBe("/repo");
+  setMeta({ cwd: process.cwd(), session: null, pid: null, hook: false });
 });
