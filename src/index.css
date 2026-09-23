@@ -1,0 +1,13 @@
+/* "mango" theme: the talkto layout on Beautiful UI's tokens.
+ * foundation.css is Beautiful UI's stylesheet, verbatim from
+ * https://www.beautifului.dev/r/foundation.json — update it by re-copying, not editing. */
+@import "./foundation.css";
+
+/* Beautiful UI sets these two through next/font; here the faces come from index.html. */
+:root {
+  --font-inter: "Inter";
+  --font-mono-face: "JetBrains Mono";
+  color-scheme: light;
+}
+
+.dark { color-scheme: dark; }
