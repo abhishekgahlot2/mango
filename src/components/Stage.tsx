@@ -84,7 +84,7 @@ function turns(events: ActivityEvent[]): Turn[] {
       }
       i--;
       out.push({ kind: "tools", key, steps });
-    } else if (e.kind !== "tool_result") out.push({ kind: "text", e });
+    } else if (e.kind === "assistant" || (e.kind === "user" && !e.text.trimStart().startsWith("<"))) out.push({ kind: "text", e }); // "<…>" user rows are harness notifications, not the person
   }
   return out;
 }
@@ -111,7 +111,7 @@ export function Stage({ agent, color, tasks, messages, events, unread, now, onDe
   useEffect(() => { stream.current?.scrollTo({ top: stream.current.scrollHeight }); }, [recent.length, agent.name]);
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col gap-3">
+    <section className="flex min-h-[600px] flex-1 shrink-0 flex-col gap-3">
       <header className="flex items-center gap-3.5 rounded-card bg-surface px-4 py-3 shadow-card">
         <span className="flex size-10 shrink-0 items-center justify-center rounded-control bg-surface text-ink shadow-btn">
           <AgentGlyph glyph={glyphFor(agent.name)} className="size-5" />

@@ -63,7 +63,7 @@ export function Timeline({ agents, colorOf, tasks, messages, now, selected, onSe
   const fmt = (t: number) => new Date(t).toTimeString().slice(0, 5);
 
   return (
-    <section className="rounded-card bg-surface px-4 pb-1 pt-3 shadow-card">
+    <section className="shrink-0 rounded-card bg-surface px-4 pb-1 pt-3 shadow-card">
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-[11px] font-medium uppercase tracking-wide text-ink-3">Timeline · {range === "1h" ? "last hour" : "today"}</span>
         <span className="flex items-center gap-3.5 text-[11px] text-ink-3">
