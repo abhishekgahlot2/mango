@@ -34,6 +34,7 @@ bun cli/mango.ts hook claude     # Claude Code, every repo. Add --project for ju
 bun cli/mango.ts hook codex      # Codex
 bun cli/mango.ts hook opencode   # OpenCode (adds a section to the repo's AGENTS.md)
 bun cli/mango.ts serve           # open http://localhost:4321
+bun cli/mango.ts autostart       # macOS: start the board at login and keep it running (--off to remove)
 ```
 
 Now start an agent in any repo. When the session starts, a hook tells it its name (something

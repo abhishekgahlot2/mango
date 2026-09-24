@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync, rmdirSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { ADAPTERS, adapterFor, toolOf } from "./adapters";
 import { agentNameFor, branchOf, findRoot, isValidRecordName, messageName, now, readAll, readOne, repoName, shortId, write, type Agent, type Message, type Status, type Task } from "./store";
@@ -46,6 +47,38 @@ export function harnessPid(names: string[] = []): number | null {
     pid = Number(ppid);
   }
   return firstNonShell;
+}
+
+const PLIST = join(homedir(), "Library", "LaunchAgents", "dev.mango.board.plist");
+
+/** macOS: run the board at login and keep it running (launchd). `--off` removes it. */
+export function autostart(root: string, port: number, off: boolean): string {
+  const label = "dev.mango.board";
+  const target = `gui/${process.getuid?.() ?? 501}/${label}`;
+  Bun.spawnSync(["launchctl", "bootout", target]); // idempotent: stop whatever is loaded now
+  if (off) {
+    if (existsSync(PLIST)) unlinkSync(PLIST);
+    return `autostart off (${PLIST} removed)`;
+  }
+  const log = join(homedir(), "Library", "Logs", "mango.log");
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key><array>${[process.execPath, import.meta.path, "serve", "--port", String(port)].map((s) => `<string>${s}</string>`).join("")}</array>
+  <key>WorkingDirectory</key><string>${dirname(root)}</string>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${log}</string>
+  <key>StandardErrorPath</key><string>${log}</string>
+</dict></plist>
+`;
+  mkdirSync(dirname(PLIST), { recursive: true });
+  writeFileSync(PLIST, xml);
+  const r = Bun.spawnSync(["launchctl", "bootstrap", `gui/${process.getuid?.() ?? 501}`, PLIST]);
+  if (r.exitCode !== 0) throw new Error(`launchctl bootstrap failed: ${r.stderr.toString().trim() || r.stdout.toString().trim()}`);
+  return `autostart on: the board runs at login on http://localhost:${port} (launchd ${label}, log ${log})`;
 }
 
 export function forget(root: string, name: string) {
@@ -201,7 +234,7 @@ export function hookText(root: string, name: string, full: boolean): string {
 const USAGE = `mango — agents self-report; you watch.
   mango --as <name> start "title #tag"|t-id | note "text" | done ["text"] | status working|blocked|idle ["why"]
   mango --as <name> send <agent|*> "text" | inbox [--peek]
-  mango agents | forget <name> | hook <claude|codex|opencode> [--project] | serve [--port 4321]
+  mango agents | forget <name> | hook <claude|codex|opencode> [--project] | serve [--port 4321] | autostart [--off] [--port 4321]
 Identity: --as <name> or MANGO_AGENT. Names like claude-ab12 set the tool glyph.`;
 
 function parse(argv: string[]) {
@@ -263,6 +296,10 @@ async function main(argv: string[]) {
       break;
     }
     case "forget": forget(root, args[0]); console.log(`forgot ${args[0]} (its tasks and messages stay)`); break;
+    case "autostart": {
+      if (process.platform !== "darwin") throw new Error("autostart is macOS (launchd) only for now");
+      console.log(autostart(root, Number(flags.port) || 4321, flags.off === true)); break;
+    }
     case "hook": {
       const adapter = adapterFor(args[0] ?? "");
       console.log(adapter.install(dirname(root), { global: !flags.project, command: `${CMD} inbox --hook ${adapter.tool}` }));
