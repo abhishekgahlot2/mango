@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { agentKey, isEnded, repoColors, shownStatus, unreadCount, useActivity, useBoard, useNow, type Agent } from "@/board";
+import { agentKey, isEnded, repoColors, shownStatus, unreadCount, useActivity, useBoard, useNow, useOpen, type Agent } from "@/board";
 import { AgentDetail } from "@/components/AgentDetail";
 import { Rail } from "@/components/Rail";
 import { Stage } from "@/components/Stage";
@@ -19,10 +19,13 @@ export function App() {
   };
   const [repo, setRepo] = useState<string | null>(null);
   const [tag, setTag] = useState<string | null>(null);
-  const tags = [...new Set(board.tasks.flatMap((t) => t.tags))].toSorted();
+  const tagCount = new Map<string, number>();
+  for (const t of board.tasks) for (const g of t.tags) tagCount.set(g, (tagCount.get(g) ?? 0) + 1);
+  const tags = [...tagCount.entries()].toSorted((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([g]) => g);
   // The selected agent lives in the URL hash, so a view is linkable: /#a2a/claude-ab12
   const [selected, setSelected] = useState(() => decodeURIComponent(location.hash.slice(1)) || null);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [timelineOpen, setTimelineOpen] = useOpen("timeline", false);
   const select = (key: string) => {
     history.replaceState(null, "", `#${key}`);
     setSelected(key);
@@ -55,7 +58,14 @@ export function App() {
             No agents yet. In a repo run <code className="font-mono">bun cli/mango.ts hook claude</code>, then start a Claude Code session.
           </section>
         )}
-        <Timeline agents={lanes} colorOf={colorOf} tasks={board.tasks} messages={board.messages} now={now} selected={current ? agentKey(current) : null} onSelect={select} />
+        <details open={timelineOpen} onToggle={(e) => setTimelineOpen(e.currentTarget.open)} className="shrink-0 rounded-card bg-surface shadow-card">
+          <summary className="flex cursor-pointer list-none items-center gap-2.5 px-4 py-3 [&::-webkit-details-marker]:hidden">
+            <span className="text-ink-3" style={{ transform: timelineOpen ? "rotate(90deg)" : "none" }}>▸</span>
+            <span className="text-[11px] font-medium uppercase tracking-wide text-ink-3">Timeline</span>
+            <span className="text-[12px] text-ink-3">{lanes.length} lanes · last hour or today</span>
+          </summary>
+          {timelineOpen && <Timeline agents={lanes} colorOf={colorOf} tasks={board.tasks} messages={board.messages} now={now} selected={current ? agentKey(current) : null} onSelect={select} />}
+        </details>
       </main>
       {!connected && <div className="fixed bottom-3 right-3 rounded-full bg-red px-3 py-1 text-[12px] text-white shadow-overlay">board disconnected · reconnecting</div>}
       {detailOpen && current && (

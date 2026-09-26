@@ -3,7 +3,7 @@ process.env.MANGO_REGISTRY = require("node:path").join(require("node:os").tmpdir
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { done, forget, harnessPid, hookText, inbox, note, register, send, start, status, setMeta } from "./mango";
+import { block, done, drop, forget, harnessPid, hookText, inbox, note, register, review, send, start, status, setMeta } from "./mango";
 import { branchOf, readOne, snapshot, write, type Agent, type Task } from "./store";
 
 const fresh = () => join(mkdtempSync(join(tmpdir(), "mango-")), ".mango");
@@ -16,7 +16,7 @@ test("start → note → done flow", () => {
   done(root, "claude-ab12", "shipped");
   expect(readOne<Task>(root, "tasks", t.id)).toMatchObject({ status: "done", log: [{ text: "found the bug" }, { text: "shipped" }] });
   expect(readOne<Agent>(root, "agents", "claude-ab12")).toMatchObject({ status: "idle", task: null });
-  expect(() => note(root, "claude-ab12", "x")).toThrow(/no open task/);
+  expect(() => note(root, "claude-ab12", "x")).toThrow(/no (open|current) task/);
 });
 
 test("status blocked logs the reason on the open task", () => {
@@ -59,10 +59,10 @@ test("several starts queue tasks; start t-id switches the current one", () => {
   const a = start(root, "claude-ab12", "first");
   const b = start(root, "claude-ab12", "second");
   expect(readOne<Agent>(root, "agents", "claude-ab12")!.task).toBe(b.id);
-  expect(readOne<Task>(root, "tasks", a.id)!.status).toBe("open");
+  expect(readOne<Task>(root, "tasks", a.id)!.status).toBe("queued");
   expect(start(root, "claude-ab12", a.id).id).toBe(a.id);
   expect(readOne<Agent>(root, "agents", "claude-ab12")!.task).toBe(a.id);
-  expect(() => start(root, "codex-9f3e", a.id)).toThrow(/not an open task/);
+  expect(() => start(root, "codex-9f3e", a.id)).toThrow(/not a live task/);
 });
 
 test("harnessPid skips shells and returns a running process; forget removes the record", () => {
@@ -133,4 +133,28 @@ test("a CLI write keeps the directory the hook recorded", () => {
   note(root, "claude-ab12", "from a subfolder");
   expect(readOne<Agent>(root, "agents", "claude-ab12")!.cwd).toBe("/repo");
   setMeta({ cwd: process.cwd(), session: null, pid: null, hook: false });
+});
+
+test("lifecycle: running → review → done; block/resume; drop; start parks the running one", () => {
+  const root = fresh();
+  const a = start(root, "claude-ab12", "first");
+  const b = start(root, "claude-ab12", "second");
+  expect(readOne<Task>(root, "tasks", a.id)!.status).toBe("queued");
+  expect(readOne<Task>(root, "tasks", b.id)!.status).toBe("running");
+  review(root, "claude-ab12", "PR open");
+  expect(readOne<Task>(root, "tasks", b.id)).toMatchObject({ status: "review" });
+  expect(readOne<Agent>(root, "agents", "claude-ab12")!.task).toBe(b.id);
+  block(root, "claude-ab12", "waiting on CI creds");
+  expect(readOne<Task>(root, "tasks", b.id)!.log.at(-1)!.text).toBe("blocked: waiting on CI creds");
+  expect(readOne<Agent>(root, "agents", "claude-ab12")!.status).toBe("blocked");
+  status(root, "claude-ab12", "working");
+  expect(readOne<Task>(root, "tasks", b.id)!.status).toBe("running");
+  done(root, "claude-ab12", "merged");
+  expect(readOne<Task>(root, "tasks", b.id)).toMatchObject({ status: "done" });
+  expect(readOne<Agent>(root, "agents", "claude-ab12")).toMatchObject({ status: "idle", task: null });
+  start(root, "claude-ab12", a.id);
+  expect(readOne<Task>(root, "tasks", a.id)!.status).toBe("running");
+  drop(root, "claude-ab12", a.id, "superseded");
+  expect(readOne<Task>(root, "tasks", a.id)).toMatchObject({ status: "dropped" });
+  expect(readOne<Agent>(root, "agents", "claude-ab12")!.task).toBeNull();
 });

@@ -48,9 +48,9 @@ export function AgentDetail({ agent, tasks, messages, onClose }: { agent: Agent;
     ref.current?.focus();
   }, []);
 
-  const current = tasks.find((t) => t.id === agent.task && t.status === "open");
-  const queued = tasks.filter((t) => t.status === "open" && t.id !== agent.task);
-  const done = tasks.filter((t) => t.status === "done").toSorted((a, b) => (b.ended! > a.ended! ? 1 : -1));
+  const current = tasks.find((t) => t.id === agent.task && (t.status === "running" || t.status === "review" || t.status === "blocked"));
+  const queued = tasks.filter((t) => t.status === "queued");
+  const done = tasks.filter((t) => t.status === "done" || t.status === "dropped").toSorted((a, b) => (b.ended! > a.ended! ? 1 : -1));
   const mine = messages.filter((m) => m.from === agent.name || m.to === agent.name || m.to === "*").toReversed();
   const meta: [string, string][] = [
     ["Repo", agent.repo],

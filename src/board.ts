@@ -101,3 +101,17 @@ export function shownStatus(a: BoardAgent, now: number): Shown {
   return a.status;
 }
 export const isEnded = (a: BoardAgent, now: number) => a.alive === false || (a.alive === null && now - Date.parse(a.updated) > 3_600_000);
+
+/** A collapsible panel's open state, remembered per viewer in localStorage (best effort). */
+export function useOpen(key: string, initial = false): [boolean, (v: boolean) => void] {
+  const [open, setOpen] = useState(() => {
+    try { const v = localStorage.getItem(`mango-open-${key}`); return v === null ? initial : v === "1"; } catch { return initial; }
+  });
+  const set = (v: boolean) => {
+    setOpen(v);
+    try { localStorage.setItem(`mango-open-${key}`, v ? "1" : "0"); } catch { /* optional */ }
+  };
+  return [open, set];
+}
+
+export const isCurrentTask = (s: Task["status"]) => s === "running" || s === "review" || s === "blocked";

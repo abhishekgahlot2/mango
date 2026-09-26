@@ -46,7 +46,7 @@ export function Timeline({ agents, colorOf, tasks, messages, now, selected, onSe
   // An ended agent's task that was never closed stops where the agent was last seen, not at "now".
   const endOf = (t: Task, a: Agent) => t.ended ?? (isEnded(a, now) ? a.updated : new Date(now).toISOString());
   const lanes = agents.map((a) => {
-    const mine = tasks.filter((t) => t.repo === a.repo && t.agent === a.name && Date.parse(t.started) <= now && Date.parse(endOf(t, a)) >= start)
+    const mine = tasks.filter((t) => t.repo === a.repo && t.agent === a.name && t.status !== "queued" && t.status !== "dropped" && Date.parse(t.started) <= now && Date.parse(endOf(t, a)) >= start)
       .toSorted((p, q) => (p.started < q.started ? -1 : 1));
     const rows = pack(mine.map((t) => ({ s: x(t.started), e: x(endOf(t, a)) })));
     const depth = Math.max(1, ...rows.map((r) => r + 1));
@@ -63,12 +63,13 @@ export function Timeline({ agents, colorOf, tasks, messages, now, selected, onSe
   const fmt = (t: number) => new Date(t).toTimeString().slice(0, 5);
 
   return (
-    <section className="shrink-0 rounded-card bg-surface px-4 pb-1 pt-3 shadow-card">
+    <section className="border-t border-line px-4 pb-1 pt-3">
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-[11px] font-medium uppercase tracking-wide text-ink-3">Timeline · {range === "1h" ? "last hour" : "today"}</span>
         <span className="flex items-center gap-3.5 text-[11px] text-ink-3">
           <span className="flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-sm bg-accent-tint shadow-[inset_3px_0_0_var(--accent)]" />task</span>
           <span className="flex items-center gap-1.5"><span className="h-2 w-0.5 bg-ink-2" />note</span>
+          <span className="flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-sm bg-accent-tint shadow-[inset_3px_0_0_var(--accent)]" />review</span>
           <span className="flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-sm bg-orange-tint shadow-[inset_3px_0_0_var(--orange)]" />blocked</span>
           <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-ink-2" />message</span>
         </span>
@@ -100,13 +101,14 @@ export function Timeline({ agents, colorOf, tasks, messages, now, selected, onSe
                   <text x="12" y={cy(i) + 14} fontSize="10.5" fill="var(--ink-3)">{a.repo}{isEnded(a, now) ? " · ended" : ""}</text>
                   {mine.map((t, k) => {
                     const s = x(t.started), e = x(endOf(t, a)), w = Math.max(3, e - s), y = barY(i, rows[k]);
-                    const open = t.status === "open" && !isEnded(a, now);
+                    const open = t.status !== "done" && !isEnded(a, now);
+                    const fill = t.status === "blocked" ? "var(--orange)" : t.status === "review" ? "var(--accent)" : color;
                     const blocked = t.log.flatMap((l, j) => (l.text.startsWith("blocked:") ? [[l.t, t.log[j + 1]?.t ?? endOf(t, a)]] : []));
                     return (
                       <g key={t.id}>
-                        <title>{t.title} · {t.status}{t.ended ? "" : open ? " · running" : " · left open"}</title>
-                        <rect x={s} y={y} width={w} height={BAR} rx="5" fill={open ? color : "var(--ink-3)"} opacity={open ? 0.18 : 0.14} />
-                        <rect x={s} y={y} width="3" height={BAR} rx="1.5" fill={open ? color : "var(--ink-3)"} />
+                        <title>{t.title} · {t.status}{!t.ended && !open ? " · left open" : ""}</title>
+                        <rect x={s} y={y} width={w} height={BAR} rx="5" fill={open ? fill : "var(--ink-3)"} opacity={open ? (t.status === "review" ? 0.12 : 0.18) : 0.14} />
+                        <rect x={s} y={y} width="3" height={BAR} rx="1.5" fill={open ? fill : "var(--ink-3)"} />
                         {blocked.map(([b0, b1], j) => (
                           <rect key={j} x={x(b0)} y={y} width={Math.max(3, x(b1) - x(b0))} height={BAR} rx="5" fill="var(--orange)" opacity="0.35" />
                         ))}

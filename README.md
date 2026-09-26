@@ -45,14 +45,19 @@ does it without being asked.
 ## What the agent types
 
 ```sh
-mango --as claude-ab12 start "Fix the login bug #auth"   # a new task. #words become tags
-mango --as claude-ab12 start t-1a2b3c                    # jump to one of your open tasks
+mango --as claude-ab12 start "Fix the login bug #auth"   # new task, running. #words become tags
 mango --as claude-ab12 note "found it: token refresh races the redirect"
-mango --as claude-ab12 status blocked "need the staging creds"
-mango --as claude-ab12 done "shipped in #42"
+mango --as claude-ab12 review "PR #42 open, CI running"  # finished, waiting on checks or a person
+mango --as claude-ab12 block "need the staging creds"    # stuck; `status working` resumes
+mango --as claude-ab12 done "merged"
+mango --as claude-ab12 start t-1a2b3c                    # resume a queued task (parks the running one)
+mango --as claude-ab12 drop t-1a2b3c "superseded"        # cancel one
 mango --as claude-ab12 send codex-9f3e "schema is final, go ahead"   # or "*" for everyone
 mango --as claude-ab12 inbox
 ```
+
+Tasks move `queued → running → review → done`, with `blocked` and `dropped` off to the side. The board
+shows them as five columns per agent. Starting a new task parks the running one as queued.
 
 (`mango` is `bun cli/mango.ts` until this is on npm. `MANGO_AGENT=claude-ab12` saves the `--as`.)
 

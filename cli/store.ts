@@ -12,7 +12,11 @@ export type Agent = {
 };
 /** Agent as the board sees it: `alive` is null when no pid was ever captured; `repo` keys it across stores. */
 export type BoardAgent = Agent & { alive: boolean | null; repo: string; /** last transcript write, when a transcript is known */ activeAt: string | null };
-export type Task = { id: string; agent: string; title: string; tags: string[]; status: "open" | "done"; log: { t: string; text: string }[]; started: string; ended: string | null };
+/** queued → running → review → done, with blocked and dropped off to the side. A task is "current" for its agent while running, in review, or blocked. */
+export type TaskStatus = "queued" | "running" | "review" | "blocked" | "done" | "dropped";
+export const CURRENT: readonly TaskStatus[] = ["running", "review", "blocked"];
+export const isCurrent = (s: TaskStatus) => CURRENT.includes(s);
+export type Task = { id: string; agent: string; title: string; tags: string[]; status: TaskStatus; log: { t: string; text: string }[]; started: string; ended: string | null };
 export type Message = { t: string; from: string; to: string; text: string };
 export type Snapshot = {
   repos: string[];
@@ -135,6 +139,9 @@ export function isRunning(pid: number): boolean {
 export function snapshot(root: string): Snapshot {
   const repo = repoName(root);
   const tasks = readAll<Partial<Task>>(root, "tasks").map((t) => ({ tags: [], ...t.data, repo }) as Task & { repo: string });
+  const pointed = new Set(readAll<Partial<Agent>>(root, "agents").map((a) => a.data.task).filter(Boolean));
+  // Records written before the lifecycle existed say "open": running if an agent points at them, else queued.
+  for (const t of tasks) if ((t.status as string) === "open") t.status = pointed.has(t.id) ? "running" : "queued";
   const taskById = new Map(tasks.map((task) => [task.id, task]));
   return {
     repos: [repo],
@@ -142,7 +149,7 @@ export function snapshot(root: string): Snapshot {
     agents: readAll<Partial<Agent>>(root, "agents").map((a) => {
       const agent = { cwd: "", branch: null, session: null, pid: null, ...a.data } as Agent;
       const current = agent.task && taskById.get(agent.task);
-      const coherent = agent.task && (!current || current.status !== "open" || current.agent !== agent.name)
+      const coherent = agent.task && (!current || !isCurrent(current.status) || current.agent !== agent.name)
         ? { ...agent, task: null, status: "idle" as const } : agent;
       return { ...coherent, alive: agent.pid ? isRunning(agent.pid) : null, repo, activeAt: null };
     }),

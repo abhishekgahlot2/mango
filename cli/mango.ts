@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmdirSync, unlinkSync, writeFileSync } from "nod
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { ADAPTERS, adapterFor, toolOf } from "./adapters";
-import { agentNameFor, branchOf, findRoot, isValidRecordName, messageName, now, readAll, readOne, repoName, shortId, write, type Agent, type Message, type Status, type Task } from "./store";
+import { agentNameFor, branchOf, findRoot, isValidRecordName, messageName, now, readAll, readOne, repoName, shortId, write, type Agent, type Message, type Status, type Task, isCurrent, type TaskStatus } from "./store";
 
 /** How agents invoke mango. `bunx mango` once published; the local file until then. */
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -24,7 +24,7 @@ const agent = (root: string, name: string): Agent => {
   if (saved.name !== name) throw new Error(`agent record name mismatch: ${name}`);
   if (!saved.task) return saved;
   const task = readOne<Task>(root, "tasks", saved.task);
-  return task?.id === saved.task && task.agent === name && task.status === "open" ? saved : { ...saved, status: "idle", task: null };
+  return task?.id === saved.task && task.agent === name && isCurrent(task.status) ? saved : { ...saved, status: "idle", task: null };
 };
 const save = (root: string, a: Agent) =>
   write(root, "agents", a.name, {
@@ -111,8 +111,33 @@ const withAgentLock = <T>(root: string, name: string, fn: () => T) => withLock(r
 
 function openTask(root: string, a: Agent): Task {
   const t = a.task && readOne<Task>(root, "tasks", a.task);
-  if (!t || t.id !== a.task || t.agent !== a.name || t.status !== "open") throw new Error(`${a.name} has no open task; run start first`);
+  if (!t || t.id !== a.task || t.agent !== a.name || !isCurrent(t.status)) throw new Error(`${a.name} has no current task; run start first`);
   return t;
+}
+
+/** Move the agent's current task to `to`, logging `text` if given. Returns the task. */
+function moveCurrent(root: string, name: string, to: TaskStatus, text?: string, agentStatus?: Status): Task {
+  assertAgentName(name);
+  return withAgentLock(root, name, () => {
+    const a = agent(root, name);
+    if (!a.task) throw new Error(`${name} has no current task; run start first`);
+    const t = withTaskLock(root, a.task, () => {
+      const t = openTask(root, a);
+      if (text) t.log.push({ t: now(), text: to === "blocked" ? `blocked: ${text}` : text });
+      const next: Task = { ...t, status: to, ended: to === "done" || to === "dropped" ? now() : null };
+      write(root, "tasks", t.id, next);
+      return next;
+    });
+    save(root, { ...a, status: agentStatus ?? a.status, task: isCurrent(to) ? t.id : null });
+    return t;
+  });
+}
+
+/** Park the agent's running task as queued (a new one is about to take its place). */
+function parkRunning(root: string, a: Agent) {
+  if (!a.task) return;
+  const t = readOne<Task>(root, "tasks", a.task);
+  if (t && t.agent === a.name && t.status === "running") withTaskLock(root, t.id, () => write(root, "tasks", t.id, { ...t, status: "queued" }));
 }
 
 export function register(root: string, name: string) {
@@ -126,21 +151,25 @@ export function parseTitle(raw: string): { title: string; tags: string[] } {
   return { title: raw.replace(/(?:^|\s)#[\w-]+/g, "").replace(/\s+/g, " ").trim(), tags };
 }
 
-/** `start "title #tag"` opens a new task and makes it current; `start t-id` switches to one of the agent's open tasks.
- *  Other open tasks stay queued on the card. */
+/** `start "title #tag"` opens a new running task; `start t-id` resumes a queued, review or blocked task.
+ *  Whatever was running is parked as queued. */
 export function start(root: string, name: string, titleOrId: string): Task {
   assertAgentName(name);
   return withAgentLock(root, name, () => {
     const a = agent(root, name);
     const existing = /^t-[0-9a-f]{6,12}$/.test(titleOrId) ? readOne<Task>(root, "tasks", titleOrId) : null;
     if (existing) {
-      if (existing.id !== titleOrId || existing.agent !== name || existing.status !== "open") throw new Error(`${titleOrId} is not an open task of ${name}`);
+      if (existing.id !== titleOrId || existing.agent !== name || existing.status === "done" || existing.status === "dropped") throw new Error(`${titleOrId} is not a live task of ${name}`);
+      if (existing.id !== a.task) parkRunning(root, a);
+      const next: Task = { ...existing, status: "running" };
+      withTaskLock(root, existing.id, () => write(root, "tasks", existing.id, next));
       save(root, { ...a, status: "working", task: existing.id });
-      return existing;
+      return next;
     }
     const { title, tags } = parseTitle(titleOrId);
     if (!title) throw new Error("a task needs a title");
-    const t: Task = { id: `t-${shortId()}`, agent: name, title, tags, status: "open", log: [], started: now(), ended: null };
+    parkRunning(root, a);
+    const t: Task = { id: `t-${shortId()}`, agent: name, title, tags, status: "running", log: [], started: now(), ended: null };
     write(root, "tasks", t.id, t);
     save(root, { ...a, status: "working", task: t.id });
     return t;
@@ -161,22 +190,28 @@ export function note(root: string, name: string, text: string) {
   });
 }
 
-export function done(root: string, name: string, text?: string) {
+export const done = (root: string, name: string, text?: string) => moveCurrent(root, name, "done", text, "idle");
+/** Work is finished but not accepted yet: CI, a reviewer, a human check. Still the agent's current task. */
+export const review = (root: string, name: string, text?: string) => moveCurrent(root, name, "review", text, "working");
+export const block = (root: string, name: string, why: string) => moveCurrent(root, name, "blocked", why, "blocked");
+
+/** Cancel one of your tasks by id. If it was current, the agent goes idle. */
+export function drop(root: string, name: string, id: string, why?: string) {
   assertAgentName(name);
   withAgentLock(root, name, () => {
     const a = agent(root, name);
-    if (!a.task) throw new Error(`${name} has no open task; run start first`);
-    withTaskLock(root, a.task, () => {
-      const t = openTask(root, a);
-      if (text) t.log.push({ t: now(), text });
-      write(root, "tasks", t.id, { ...t, status: "done", ended: now() });
-    });
-    save(root, { ...a, status: "idle", task: null });
+    const t = readOne<Task>(root, "tasks", id);
+    if (!t || t.agent !== name || t.status === "done" || t.status === "dropped") throw new Error(`${id} is not a live task of ${name}`);
+    withTaskLock(root, id, () => write(root, "tasks", id, { ...t, status: "dropped", ended: now(), log: why ? [...t.log, { t: now(), text: `dropped: ${why}` }] : t.log }));
+    if (a.task === id) save(root, { ...a, status: "idle", task: null });
   });
 }
 
 export function status(root: string, name: string, s: Status, why?: string) {
   assertAgentName(name);
+  const cur = agent(root, name);
+  if (cur.task && s === "blocked") return void block(root, name, why ?? "no reason given");
+  if (cur.task && s === "working" && readOne<Task>(root, "tasks", cur.task)?.status === "blocked") return void moveCurrent(root, name, "running", why, "working");
   withAgentLock(root, name, () => {
     const a = agent(root, name);
     if (why && a.task) {
@@ -218,7 +253,8 @@ export function hookText(root: string, name: string, full: boolean): string {
   if (full) {
     lines.push(
       `[mango] You are "${name}" in repo ${repoName(root)}. Report what you work on:`,
-      `  ${CMD} --as ${name} start "task title #tag" | start t-id | note "what you did" | done "summary" | status blocked "why" | send <agent|*> "text"`,
+      `  ${CMD} --as ${name} start "task title #tag" | note "what you did" | review "PR open, CI running" | block "why" | done "summary" | send <agent|*> "text"`,
+      `  (start t-id resumes a queued task · drop t-id "why" cancels one · tasks go queued → running → review → done)`,
     );
     const t = a.task && readOne<Task>(root, "tasks", a.task);
     if (t) lines.push(`[mango] Current task ${t.id}: ${t.title} (${a.status})`);
@@ -232,7 +268,8 @@ export function hookText(root: string, name: string, full: boolean): string {
 }
 
 const USAGE = `mango — agents self-report; you watch.
-  mango --as <name> start "title #tag"|t-id | note "text" | done ["text"] | status working|blocked|idle ["why"]
+  mango --as <name> start "title #tag"|t-id | note "text" | review ["text"] | block "why" | done ["text"] | drop t-id ["why"]
+  mango --as <name> status working|blocked|idle ["why"]
   mango --as <name> send <agent|*> "text" | inbox [--peek]
   mango agents | forget <name> | hook <claude|codex|opencode> [--project] | serve [--port 4321] | autostart [--off] [--port 4321]
 Identity: --as <name> or MANGO_AGENT. Names like claude-ab12 set the tool glyph.`;
@@ -279,6 +316,9 @@ async function main(argv: string[]) {
     case "start": { const t = start(root, who(), text(0)); console.log(`now on ${t.id}: ${t.title}`); break; }
     case "note": note(root, who(), text(0)); console.log("noted"); break;
     case "done": done(root, who(), text(0) || undefined); console.log("done"); break;
+    case "review": { const t = review(root, who(), text(0) || undefined); console.log(`in review: ${t.id} ${t.title}`); break; }
+    case "block": { const t = block(root, who(), text(0) || "no reason given"); console.log(`blocked: ${t.id} ${t.title}`); break; }
+    case "drop": drop(root, who(), args[0], text(1) || undefined); console.log(`dropped ${args[0]}`); break;
     case "status": {
       const s = args[0] as Status;
       if (!["working", "blocked", "idle"].includes(s)) throw new Error("status must be working|blocked|idle");

@@ -1,4 +1,4 @@
-import { ago, agentKey, glyphFor, shortPath, shownStatus, type Agent, type Task } from "@/board";
+import { ago, agentKey, glyphFor, isCurrentTask, shortPath, shownStatus, type Agent, type Task } from "@/board";
 import { StatusPill } from "@/components/atoms/StatusPill";
 import { ValuePill } from "@/components/atoms/ValuePill";
 import { cn } from "@/lib/utils";
@@ -7,12 +7,15 @@ import { AgentGlyph } from "./AgentGlyph";
 const TONE = { active: "green", working: "green", blocked: "orange", idle: "neutral", ended: "neutral" } as const;
 
 /** Left rail: brand, repo filter, one neutral row per live agent, ended sessions collapsed, theme toggle. */
+import { useState } from "react";
+
 export function Rail({ live, ended, tasks, repos, repo, colorOf, tags, tag, selected, now, dark, onSelect, onRepo, onTag, onTheme }: {
   live: Agent[]; ended: Agent[]; tasks: Task[]; repos: string[]; repo: string | null; colorOf: (repo: string) => string; tags: string[]; tag: string | null;
   selected: string | null; now: number; dark: boolean; onSelect: (key: string) => void; onRepo: (repo: string | null) => void; onTag: (tag: string | null) => void; onTheme: () => void;
 }) {
-  const current = (a: Agent) => tasks.find((t) => t.repo === a.repo && t.agent === a.name && t.id === a.task && t.status === "open");
-  const queued = (a: Agent) => tasks.filter((t) => t.repo === a.repo && t.agent === a.name && t.status === "open" && t.id !== a.task).length;
+  const [allTags, setAllTags] = useState(false);
+  const current = (a: Agent) => tasks.find((t) => t.repo === a.repo && t.agent === a.name && t.id === a.task && isCurrentTask(t.status));
+  const queued = (a: Agent) => tasks.filter((t) => t.repo === a.repo && t.agent === a.name && t.status === "queued").length;
   const chip = (label: string, on: boolean, onClick: () => void, dot?: string) => (
     <button key={label} type="button" onClick={onClick} aria-pressed={on}
       className={cn("flex h-6 items-center gap-1.5 rounded-full px-2.5 text-[12px]", on ? "bg-ink text-canvas" : "text-ink-2 shadow-hairline hover:bg-hover")}>
@@ -23,7 +26,7 @@ export function Rail({ live, ended, tasks, repos, repo, colorOf, tags, tag, sele
     <aside className="flex w-full shrink-0 flex-col gap-1 border-b border-line bg-surface p-3 md:h-dvh md:w-[300px] md:border-b-0 md:border-r">
       <div className="flex items-baseline gap-2.5 px-2 pb-2 pt-1">
         <h1 className="text-[20px] font-semibold tracking-tight">mango</h1>
-        <span className="text-[12px] text-ink-3">{live.length} live · {tasks.filter((t) => t.status === "open").length} open · {tasks.filter((t) => t.status === "done").length} done</span>
+        <span className="text-[12px] text-ink-3">{live.length} live · {tasks.filter((t) => isCurrentTask(t.status) || t.status === "queued").length} open · {tasks.filter((t) => t.status === "done").length} done</span>
       </div>
       {repos.length > 1 && (
         <div className="flex flex-wrap gap-1.5 px-2 pb-2">
@@ -33,10 +36,11 @@ export function Rail({ live, ended, tasks, repos, repo, colorOf, tags, tag, sele
       )}
       {tags.length > 0 && (
         <div className="flex flex-wrap gap-1 px-2 pb-2">
-          {tags.map((t) => (
+          {(allTags || tags.length <= 12 ? tags : tags.slice(0, 12)).map((t) => (
             <button key={t} type="button" onClick={() => onTag(tag === t ? null : t)} aria-pressed={tag === t}
               className={cn("rounded-chip px-1.5 py-0.5 font-mono text-[11px]", tag === t ? "bg-ink text-canvas" : "bg-inset text-ink-2 hover:bg-hover")}>#{t}</button>
           ))}
+          {tags.length > 12 && <button type="button" onClick={() => setAllTags((v) => !v)} className="px-1 text-[11px] text-ink-3 hover:text-ink-2">{allTags ? "less" : `+${tags.length - 12}`}</button>}
         </div>
       )}
       <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
@@ -59,7 +63,7 @@ export function Rail({ live, ended, tasks, repos, repo, colorOf, tags, tag, sele
                   <StatusPill tone={TONE[shownStatus(a, now)]} className="shrink-0 h-5 text-[11px]">{shownStatus(a, now)}</StatusPill>
                 </span>
                 <span className="flex items-baseline gap-2 text-[12px]">
-                  <span className={cn("min-w-0 truncate", t ? "text-ink-2" : "text-ink-3")}>{t ? t.title : "No open task"}</span>
+                  <span className={cn("min-w-0 truncate", t ? "text-ink-2" : "text-ink-3")}>{t ? `${t.status === "running" ? "" : t.status + ": "}${t.title}` : "No current task"}</span>
                   {queued(a) > 0 && <ValuePill className="ml-auto shrink-0 text-[11px]">+{queued(a)} queued</ValuePill>}
                 </span>
               </button>

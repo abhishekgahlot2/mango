@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ago, elapsed, glyphFor, hhmm, shortPath, shownStatus, type ActivityEvent, type Agent, type BoardMessage, type Task } from "@/board";
+import { ago, elapsed, glyphFor, hhmm, isCurrentTask, shortPath, shownStatus, useOpen, type ActivityEvent, type Agent, type BoardMessage, type Task } from "@/board";
 import { Chip } from "@/components/atoms/Chip";
 import { StatusPill } from "@/components/atoms/StatusPill";
 import { cn } from "@/lib/utils";
@@ -40,33 +40,53 @@ type Turn = { kind: "text"; e: ActivityEvent } | { kind: "tools"; key: string; s
 
 const stamp = (iso: string) => new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
-/** A queued or done task: the one-line row opens into the full record (title, tags, timing, every note). */
-function TaskItem({ t, now, done }: { t: Task; now: number; done: boolean }) {
+/** One task as a card; click to open the full record (id, timing, every note). */
+function TaskCard({ t, now }: { t: Task; now: number }) {
+  const closed = t.status === "done" || t.status === "dropped";
+  const last = t.log.at(-1);
   return (
     <li>
-      <details className="group rounded-chip">
-        <summary className="flex cursor-pointer list-none items-baseline gap-2 rounded-chip px-1.5 py-0.5 hover:bg-hover [&::-webkit-details-marker]:hidden">
-          <span className="shrink-0 font-mono text-[11px] text-ink-3">{done ? hhmm(t.ended!) : t.id}</span>
-          <span className={cn("min-w-0 truncate text-ink-2 group-open:whitespace-normal group-open:text-ink", done && "line-through decoration-line-strong group-open:no-underline")}>{t.title}</span>
-          {t.tags.map((tag) => <Chip key={tag} className="text-[10px]">#{tag}</Chip>)}
-          <span className="ml-auto shrink-0 font-mono text-[11px] text-ink-3">{done ? elapsed(t.started, Date.parse(t.ended!)) : hhmm(t.started)}</span>
+      <details className="group rounded-control bg-inset">
+        <summary className="cursor-pointer list-none px-3 py-2.5 [&::-webkit-details-marker]:hidden">
+          <div className="flex items-baseline gap-2">
+            <span className={cn("min-w-0 break-words text-[13px] font-medium", closed ? "text-ink-2" : "text-ink", t.status === "dropped" && "line-through")}>{t.title}</span>
+            <span className="ml-auto shrink-0 font-mono text-[11px] tabular-nums text-ink-3">{closed ? elapsed(t.started, Date.parse(t.ended!)) : elapsed(t.started, now)}</span>
+          </div>
+          {(t.tags.length > 0 || last) && (
+            <div className="mt-1 flex items-baseline gap-1.5 text-[12px]">
+              {t.tags.map((tag) => <Chip key={tag} className="text-[10px]">#{tag}</Chip>)}
+              {last && <span className="min-w-0 truncate text-ink-3 group-open:hidden"><span className="font-mono">{hhmm(last.t)}</span> {last.text}</span>}
+            </div>
+          )}
         </summary>
-        <div className="mx-1.5 mb-1.5 mt-1 rounded-control bg-inset px-3 py-2.5 text-[12px]">
+        <div className="border-t border-line px-3 py-2.5 text-[12px]">
           <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-ink-3">
-            <span>{t.id}</span>
-            <span>started {stamp(t.started)}</span>
-            {t.ended ? <span>done {stamp(t.ended)} · {elapsed(t.started, Date.parse(t.ended))}</span> : <span>open for {elapsed(t.started, now)}</span>}
+            <span>{t.id}</span><span>{t.status}</span><span>started {stamp(t.started)}</span>
+            {t.ended && <span>ended {stamp(t.ended)}</span>}
           </div>
           {t.log.length ? (
             <ul className="mt-2 space-y-1 leading-[18px] text-ink-2">
-              {t.log.map((l, i) => (
-                <li key={i} className="flex gap-2"><span className="shrink-0 font-mono text-ink-3">{hhmm(l.t)}</span><span className="min-w-0 break-words">{l.text}</span></li>
-              ))}
+              {t.log.map((l, i) => <li key={i} className="flex gap-2"><span className="shrink-0 font-mono text-ink-3">{hhmm(l.t)}</span><span className="min-w-0 break-words">{l.text}</span></li>)}
             </ul>
           ) : <div className="mt-2 text-ink-3">No notes.</div>}
         </div>
       </details>
     </li>
+  );
+}
+
+const MARK: Record<string, string> = { running: "bg-green", blocked: "bg-orange", review: "bg-accent", queued: "border border-ink-3", done: "bg-ink-3", dropped: "bg-ink-3" };
+
+/** One lifecycle column of the tasks board. */
+function Column({ status, title, tasks, now, empty }: { status: string; title: string; tasks: Task[]; now: number; empty: string }) {
+  return (
+    <section className="flex min-w-0 flex-col gap-2">
+      <h4 className="flex items-center gap-1.5 text-[11px] font-medium text-ink-3"><span className={cn("size-1.5 rounded-full", MARK[status])} />{title} · {tasks.length}</h4>
+      <ul className="space-y-1.5">
+        {tasks.map((t) => <TaskCard key={t.id} t={t} now={now} />)}
+        {tasks.length === 0 && <li className="rounded-control border border-dashed border-line px-3 py-2 text-[12px] text-ink-3">{empty}</li>}
+      </ul>
+    </section>
   );
 }
 
@@ -89,29 +109,32 @@ function turns(events: ActivityEvent[]): Turn[] {
   return out;
 }
 
-/** The selected agent: header, stats, current task, and its transcript activity. */
+/** The selected agent: header, stats, the tasks board (the main thing), then its transcript activity folded below. */
 export function Stage({ agent, color, tasks, messages, events, unread, now, onDetails }: {
   agent: Agent; color: string; tasks: Task[]; messages: BoardMessage[]; events: ActivityEvent[]; unread: number; now: number; onDetails: () => void;
 }) {
-  const current = tasks.find((t) => t.id === agent.task && t.status === "open");
-  const queued = tasks.filter((t) => t.status === "open" && t.id !== agent.task);
-  const doneAll = tasks.filter((t) => t.status === "done").toSorted((a, b) => (b.ended! > a.ended! ? 1 : -1));
+  const by = (s: Task["status"]) => tasks.filter((t) => t.status === s).toSorted((a, b) => (b.started > a.started ? 1 : -1));
+  const running = by("running"), blocked = by("blocked"), inReview = by("review"), queued = by("queued");
+  const done = tasks.filter((t) => t.status === "done" || t.status === "dropped").toSorted((a, b) => (b.ended! > a.ended! ? 1 : -1));
   const [showAllDone, setShowAllDone] = useState(false);
+  const current = tasks.find((t) => t.id === agent.task && isCurrentTask(t.status));
   const mine = events.filter((e) => e.repo === agent.repo && e.agent === agent.name);
   const recent = mine.slice(-120);
   const lastAt = Math.max(mine.at(-1) ? Date.parse(mine.at(-1)!.t) : 0, agent.activeAt ? Date.parse(agent.activeAt) : 0, Date.parse(agent.updated));
   const liveNow = agent.alive !== false && now - lastAt < 60_000;
   const toolsLastHour = mine.filter((e) => e.kind === "tool_use" && now - Date.parse(e.t) < HOUR).length;
-  const notesToday = tasks.flatMap((t) => t.log).filter((l) => new Date(l.t).toDateString() === new Date(now).toDateString()).length;
+  const allNotes = tasks.flatMap((t) => t.log).toSorted((a, b) => (a.t < b.t ? 1 : -1));
+  const notesToday = allNotes.filter((l) => new Date(l.t).toDateString() === new Date(now).toDateString()).length;
   const lastEvent = recent.at(-1);
   const pending = !!lastEvent && lastEvent.kind === "tool_use" && now - Date.parse(lastEvent.t) < 60_000;
   const grouped = turns(recent);
+  const [activityOpen, setActivityOpen] = useOpen("activity", false);
 
   const stream = useRef<HTMLUListElement>(null);
-  useEffect(() => { stream.current?.scrollTo({ top: stream.current.scrollHeight }); }, [recent.length, agent.name]);
+  useEffect(() => { stream.current?.scrollTo({ top: stream.current.scrollHeight }); }, [recent.length, agent.name, activityOpen]);
 
   return (
-    <section className="flex min-h-[600px] flex-1 shrink-0 flex-col gap-3">
+    <section className="flex shrink-0 flex-col gap-3">
       <header className="flex items-center gap-3.5 rounded-card bg-surface px-4 py-3 shadow-card">
         <span className="flex size-10 shrink-0 items-center justify-center rounded-control bg-surface text-ink shadow-btn">
           <AgentGlyph glyph={glyphFor(agent.name)} className="size-5" />
@@ -134,67 +157,42 @@ export function Stage({ agent, color, tasks, messages, events, unread, now, onDe
       </header>
 
       <div className="flex gap-3">
-        <Stat label="Open tasks" value={tasks.filter((t) => t.status === "open").length} sub={current ? "1 current" : "none current"} />
-        <Stat label="Notes today" value={notesToday} sub={tasks.flatMap((t) => t.log).at(-1) ? `last ${elapsed(tasks.flatMap((t) => t.log).toSorted((a, b) => (a.t < b.t ? 1 : -1))[0].t, now)} ago` : "—"} />
+        <Stat label="Live tasks" value={running.length + blocked.length + inReview.length + queued.length} sub={current ? `now: ${current.status}` : "nothing current"} />
+        <Stat label="Notes today" value={notesToday} sub={allNotes[0] ? `last ${ago(allNotes[0].t, now)}` : "—"} />
         <Stat label="Messages" value={messages.filter((m) => m.from === agent.name || m.to === agent.name || m.to === "*").length} sub={`${unread} unread`} />
         <Stat label="Tool calls / hour" value={toolsLastHour} sub={mine.length ? `${mine.length} events` : "no transcript"} />
       </div>
 
-      <div className="flex min-h-0 flex-1 gap-3">
-        <div className="flex w-[400px] shrink-0 flex-col gap-3 overflow-y-auto rounded-card bg-surface px-4 py-3.5 shadow-card">
-          <div className="flex items-center gap-2.5">
-            <Label>Tasks</Label>
-            <span className="text-[12px] text-ink-3">{current ? 1 : 0} now · {queued.length} queued · {doneAll.length} done</span>
-          </div>
-
-          <section>
-            <h4 className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-ink-3"><span className={cn("size-1.5 rounded-full", current ? (agent.status === "blocked" ? "bg-orange" : "bg-green") : "bg-ink-3")} />Now</h4>
-            {current ? (
-              <div className="rounded-control bg-inset px-3 py-2.5">
-                <div className="flex items-baseline gap-2">
-                  <span className="min-w-0 break-words text-[13px] font-semibold">{current.title}</span>
-                  <span className="ml-auto shrink-0 font-mono text-[11px] tabular-nums text-ink-3">{current.id} · {elapsed(current.started, now)}</span>
-                </div>
-                {current.tags.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{current.tags.map((tag) => <Chip key={tag}>#{tag}</Chip>)}</div>}
-                <ul className="mt-1.5 space-y-1 text-[12px] leading-[18px] text-ink-2">
-                  {current.log.map((l, i) => (
-                    <li key={i} className="flex gap-2"><span className="shrink-0 font-mono text-ink-3">{hhmm(l.t)}</span><span className="min-w-0 break-words">{l.text}</span></li>
-                  ))}
-                  {current.log.length === 0 && <li className="text-ink-3">No notes yet.</li>}
-                </ul>
-              </div>
-            ) : (
-              <div className="rounded-control bg-inset px-3 py-2.5 text-[12px] text-ink-3">Nothing in progress.</div>
-            )}
-          </section>
-
-          <details open>
-            <summary className="mb-1.5 flex cursor-pointer select-none items-center gap-1.5 text-[11px] font-medium text-ink-3"><span className="size-1.5 rounded-full border border-ink-3" />Queued · {queued.length}</summary>
-            {queued.length ? (
-              <ul className="space-y-0.5 text-[12px]">
-                {queued.map((t) => <TaskItem key={t.id} t={t} now={now} done={false} />)}
-              </ul>
-            ) : <div className="px-1.5 text-[12px] text-ink-3">Empty.</div>}
-          </details>
-
-          <details open={!current}>
-            <summary className="mb-1.5 flex cursor-pointer select-none items-center gap-1.5 text-[11px] font-medium text-ink-3"><span className="text-[10px] leading-none text-green">✓</span>Done · {doneAll.length}</summary>
-            {doneAll.length ? (
-              <ul className="space-y-0.5 text-[12px]">
-                {doneAll.slice(0, showAllDone ? undefined : 6).map((t) => <TaskItem key={t.id} t={t} now={now} done />)}
-                {doneAll.length > 6 && (
-                  <li><button type="button" onClick={() => setShowAllDone((v) => !v)} className="px-1.5 text-[12px] text-accent-ink hover:underline">{showAllDone ? "Show fewer" : `Show all ${doneAll.length}`}</button></li>
-                )}
-              </ul>
-            ) : <div className="px-1.5 text-[12px] text-ink-3">Nothing finished yet.</div>}
-          </details>
-
-          {unread > 0 && <div><Chip tone="accent">{unread} unread</Chip></div>}
+      <div className="rounded-card bg-surface px-4 py-3.5 shadow-card">
+        <div className="mb-3 flex items-center gap-2.5">
+          <Label>Tasks</Label>
+          <span className="text-[12px] text-ink-3">queued → running → review → done</span>
+          {unread > 0 && <Chip tone="accent" className="ml-auto">{unread} unread</Chip>}
         </div>
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+          <Column status="running" title="Now" tasks={running} now={now} empty="Nothing running." />
+          <Column status="blocked" title="Blocked" tasks={blocked} now={now} empty="Nothing blocked." />
+          <Column status="review" title="In review" tasks={inReview} now={now} empty="Nothing waiting on checks." />
+          <Column status="queued" title="Queued" tasks={queued} now={now} empty="Queue is empty." />
+          <section className="flex min-w-0 flex-col gap-2">
+            <h4 className="flex items-center gap-1.5 text-[11px] font-medium text-ink-3"><span className="text-[10px] leading-none text-green">✓</span>Done · {done.length}</h4>
+            <ul className="space-y-1.5">
+              {done.slice(0, showAllDone ? undefined : 6).map((t) => <TaskCard key={t.id} t={t} now={now} />)}
+              {done.length === 0 && <li className="rounded-control border border-dashed border-line px-3 py-2 text-[12px] text-ink-3">Nothing finished yet.</li>}
+              {done.length > 6 && <li><button type="button" onClick={() => setShowAllDone((v) => !v)} className="px-1 text-[12px] text-accent-ink hover:underline">{showAllDone ? "Show fewer" : `Show all ${done.length}`}</button></li>}
+            </ul>
+          </section>
+        </div>
+      </div>
 
-        <div className="flex min-w-0 flex-1 flex-col gap-2.5 rounded-card bg-surface px-4 py-3.5 shadow-card">
-          <div className="flex items-center gap-2.5"><Label>Activity</Label><span className="text-[12px] text-ink-3">from the session transcript</span></div>
-          <ul ref={stream} className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+      <details open={activityOpen} onToggle={(e) => setActivityOpen(e.currentTarget.open)} className="rounded-card bg-surface shadow-card">
+        <summary className="flex cursor-pointer list-none items-center gap-2.5 px-4 py-3 [&::-webkit-details-marker]:hidden">
+          <span className="text-ink-3 transition-transform" style={{ transform: activityOpen ? "rotate(90deg)" : "none" }}>▸</span>
+          <Label>Live activity</Label>
+          <span className="text-[12px] text-ink-3">from the session transcript · {mine.length} events{pending ? " · working…" : ""}</span>
+        </summary>
+        {activityOpen && (
+          <ul ref={stream} className="max-h-[60dvh] space-y-2 overflow-y-auto border-t border-line px-4 py-3">
             {grouped.map((g) =>
               g.kind === "text" ? (
                 <li key={g.e.id} className="flex gap-3 text-[13px] leading-5">
@@ -210,8 +208,8 @@ export function Stage({ agent, color, tasks, messages, events, unread, now, onDe
             {pending && <li className="flex gap-3 pl-[60px] text-[12px]"><span className="size-2 translate-y-1 rounded-full" style={{ background: color }} /><span className="shimmer-text">working…</span></li>}
             {recent.length === 0 && <li className="py-6 text-center text-[12px] text-ink-3">No transcript found for this session yet.</li>}
           </ul>
-        </div>
-      </div>
+        )}
+      </details>
     </section>
   );
 }
