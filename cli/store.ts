@@ -11,7 +11,7 @@ export type Agent = {
   pid: number | null;
 };
 /** Agent as the board sees it: `alive` is null when no pid was ever captured; `repo` keys it across stores. */
-export type BoardAgent = Agent & { alive: boolean | null; repo: string };
+export type BoardAgent = Agent & { alive: boolean | null; repo: string; /** last transcript write, when a transcript is known */ activeAt: string | null };
 export type Task = { id: string; agent: string; title: string; tags: string[]; status: "open" | "done"; log: { t: string; text: string }[]; started: string; ended: string | null };
 export type Message = { t: string; from: string; to: string; text: string };
 export type Snapshot = {
@@ -144,7 +144,7 @@ export function snapshot(root: string): Snapshot {
       const current = agent.task && taskById.get(agent.task);
       const coherent = agent.task && (!current || current.status !== "open" || current.agent !== agent.name)
         ? { ...agent, task: null, status: "idle" as const } : agent;
-      return { ...coherent, alive: agent.pid ? isRunning(agent.pid) : null, repo };
+      return { ...coherent, alive: agent.pid ? isRunning(agent.pid) : null, repo, activeAt: null };
     }),
     tasks,
     messages: readAll<Message>(root, "messages").map((m) => ({ ...m.data, id: m.name, repo })).slice(-500),

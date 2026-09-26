@@ -92,4 +92,12 @@ export function useActivity(key: string | null): ActivityEvent[] {
 }
 
 export const shortPath = (p: string) => p.replace(/^\/(Users|home)\/[^/]+/, "~");
+/** What the agent is doing, from evidence: a self-reported block wins, then a transcript written in the last 60s, then the self-reported status. */
+export type Shown = "blocked" | "active" | "working" | "idle" | "ended";
+export function shownStatus(a: BoardAgent, now: number): Shown {
+  if (isEnded(a, now)) return "ended";
+  if (a.status === "blocked") return "blocked";
+  if (a.activeAt && now - Date.parse(a.activeAt) < 60_000) return "active";
+  return a.status;
+}
 export const isEnded = (a: BoardAgent, now: number) => a.alive === false || (a.alive === null && now - Date.parse(a.updated) > 3_600_000);

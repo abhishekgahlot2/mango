@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { agentKey, isEnded, repoColors, unreadCount, useActivity, useBoard, useNow, type Agent } from "@/board";
+import { agentKey, isEnded, repoColors, shownStatus, unreadCount, useActivity, useBoard, useNow, type Agent } from "@/board";
 import { AgentDetail } from "@/components/AgentDetail";
 import { Rail } from "@/components/Rail";
 import { Stage } from "@/components/Stage";
 import { Timeline } from "@/components/Timeline";
 
-const ORDER = { working: 0, blocked: 1, idle: 2 } as const;
+const ORDER = { active: 0, working: 1, blocked: 2, idle: 3, ended: 4 } as const;
 
 export function App() {
   const { board, connected } = useBoard();
@@ -28,7 +28,7 @@ export function App() {
     setSelected(key);
   };
 
-  const rank = (a: Agent) => (isEnded(a, now) ? 3 : ORDER[a.status]);
+  const rank = (a: Agent) => ORDER[shownStatus(a, now)];
   const hasTag = (a: Agent) => !tag || board.tasks.some((t) => t.repo === a.repo && t.agent === a.name && t.tags.includes(tag));
   const agents = board.agents.filter((a) => (!repo || a.repo === repo) && hasTag(a)).toSorted((a, b) => rank(a) - rank(b) || (b.updated > a.updated ? 1 : -1));
   const live = agents.filter((a) => !isEnded(a, now));

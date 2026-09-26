@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { ago, elapsed, glyphFor, hhmm, shortPath, type ActivityEvent, type Agent, type BoardMessage, type Task } from "@/board";
+import { ago, elapsed, glyphFor, hhmm, shortPath, shownStatus, type ActivityEvent, type Agent, type BoardMessage, type Task } from "@/board";
 import { Chip } from "@/components/atoms/Chip";
 import { StatusPill } from "@/components/atoms/StatusPill";
 import { cn } from "@/lib/utils";
 import { AgentGlyph } from "./AgentGlyph";
 import ToolChips, { type ToolStep } from "./primitives/ToolChips";
 
-const TONE = { working: "green", blocked: "orange", idle: "neutral" } as const;
+const TONE = { active: "green", working: "green", blocked: "orange", idle: "neutral", ended: "neutral" } as const;
 const HOUR = 3_600_000;
 
 function Stat({ label, value, sub }: { label: string; value: string | number; sub: string }) {
@@ -99,7 +99,7 @@ export function Stage({ agent, color, tasks, messages, events, unread, now, onDe
   const [showAllDone, setShowAllDone] = useState(false);
   const mine = events.filter((e) => e.repo === agent.repo && e.agent === agent.name);
   const recent = mine.slice(-120);
-  const lastAt = mine.at(-1) ? Date.parse(mine.at(-1)!.t) : Date.parse(agent.updated);
+  const lastAt = Math.max(mine.at(-1) ? Date.parse(mine.at(-1)!.t) : 0, agent.activeAt ? Date.parse(agent.activeAt) : 0, Date.parse(agent.updated));
   const liveNow = agent.alive !== false && now - lastAt < 60_000;
   const toolsLastHour = mine.filter((e) => e.kind === "tool_use" && now - Date.parse(e.t) < HOUR).length;
   const notesToday = tasks.flatMap((t) => t.log).filter((l) => new Date(l.t).toDateString() === new Date(now).toDateString()).length;
@@ -119,7 +119,7 @@ export function Stage({ agent, color, tasks, messages, events, unread, now, onDe
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="text-[16px] font-semibold">{agent.tool} · {agent.cwd.split("/").at(-1) || agent.repo}</span>
-            <StatusPill tone={agent.alive === false ? "neutral" : TONE[agent.status]}>{agent.alive === false ? "ended" : agent.status}</StatusPill>
+            <StatusPill tone={TONE[shownStatus(agent, now)]}>{shownStatus(agent, now)}</StatusPill>
             <span className={cn("flex items-center gap-1.5 text-[12px]", liveNow ? "text-green" : "text-ink-3")}>
               <span className={cn("size-[7px] rounded-full", liveNow ? "bg-green shadow-[0_0_0_4px_var(--green-tint)]" : "bg-ink-3")} />
               {liveNow ? `live · ${ago(new Date(lastAt).toISOString(), now)}` : `quiet · ${elapsed(new Date(lastAt).toISOString(), now)}`}

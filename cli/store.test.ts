@@ -71,3 +71,17 @@ test("writes register their root; snapshotAll merges stores in time order", () =
   expect(new Set(s.messages.map((m) => m.repo)).size).toBe(2);
   expect(s.messages.map((m) => m.text)).toEqual(["first", "second"]);
 });
+
+test("transcriptTouchedAt reads the transcript mtime for a claude agent", async () => {
+  const { transcriptTouchedAt } = await import("./activity");
+  const base = mkdtempSync(join(tmpdir(), "mango-tr-"));
+  const cwd = join(base, "repo");
+  const projects = join(base, "projects");
+  mkdirSync(join(projects, cwd.replace(/[\\/:]/g, "-")), { recursive: true });
+  writeFileSync(join(projects, cwd.replace(/[\\/:]/g, "-"), "abcd1234.jsonl"), "{}\n");
+  process.env.MANGO_CLAUDE_PROJECTS = projects;
+  const agent = { name: "claude-abcd", tool: "claude", status: "idle", task: null, updated: "", inbox_cursor: "", cwd, branch: null, session: "abcd1234", pid: null, alive: null, repo: "repo", activeAt: null } as const;
+  const t = transcriptTouchedAt(agent);
+  expect(t && Date.now() - Date.parse(t) < 60_000).toBe(true);
+  delete process.env.MANGO_CLAUDE_PROJECTS;
+});

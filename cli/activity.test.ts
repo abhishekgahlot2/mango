@@ -7,7 +7,7 @@ import type { BoardAgent } from "./store";
 
 const agent: BoardAgent = {
   name: "claude-c6d2", tool: "claude", status: "working", task: null, updated: "2026-09-23T18:00:00.000Z",
-  inbox_cursor: "", cwd: "/tmp/a2a", branch: null, session: null, pid: null, alive: null, repo: "a2a",
+  inbox_cursor: "", cwd: "/tmp/a2a", branch: null, session: null, pid: null, alive: null, repo: "a2a", activeAt: null,
 };
 
 test("parses useful Claude blocks and truncates large content", () => {

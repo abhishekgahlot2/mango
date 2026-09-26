@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, watch } from "node:fs";
 import { dirname, join } from "node:path";
-import { activityEvents } from "./activity";
+import { activityEvents, transcriptTouchedAt } from "./activity";
 import { knownRoots, registryPath, snapshotAll } from "./store";
 
 /** Read-only board over this repo's store plus every store in the registry.
@@ -13,7 +13,14 @@ export function serve(root: string, port: number) {
   const watched = new Set<string>();
 
   const roots = () => [...new Set([root, ...knownRoots()])];
-  const frame = () => enc.encode(`data: ${JSON.stringify(snapshotAll(roots()))}\n\n`);
+  /** The board's state: the stores plus, per agent, when its transcript was last written. */
+  const state = () => {
+    const s = snapshotAll(roots());
+    return { ...s, agents: s.agents.map((a) => ({ ...a, activeAt: transcriptTouchedAt(a) })) };
+  };
+  const frame = () => enc.encode(`data: ${JSON.stringify(state())}
+
+`);
   const activityFrames = () => {
     const all = activityEvents(snapshotAll(roots()).agents);
     const byKey = new Map<string | null, Uint8Array>();
@@ -52,6 +59,19 @@ export function serve(root: string, port: number) {
   watch(dirname(registryPath()), broadcast); // a new repo registering itself
   watchAll();
 
+  // Liveness and transcript activity change without any store write: re-send the state every 15s when it differs.
+  let lastState = "";
+  setInterval(() => {
+    if (!clients.size) return;
+    const f = frame();
+    const cur = new TextDecoder().decode(f);
+    if (cur === lastState) return;
+    lastState = cur;
+    for (const c of clients) {
+      try { c.enqueue(f); } catch { clients.delete(c); }
+    }
+  }, 15_000);
+
   // Bun drops idle connections after 10s by default; SSE streams are idle by nature.
   setInterval(() => {
     for (const c of clients) {
@@ -78,7 +98,7 @@ export function serve(root: string, port: number) {
     idleTimeout: 255,
     async fetch(req) {
       const { pathname } = new URL(req.url);
-      if (pathname === "/api/state") return Response.json(snapshotAll(roots()));
+      if (pathname === "/api/state") return Response.json(state());
       if (pathname === "/api/events") {
         let ctrl: ReadableStreamDefaultController<Uint8Array>;
         const stream = new ReadableStream<Uint8Array>({

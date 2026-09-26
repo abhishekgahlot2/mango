@@ -127,6 +127,23 @@ function readTail(path: string, agent: BoardAgent, parse: typeof parseActivityLi
   }
 }
 
+/** Path of the agent's transcript, whichever harness wrote it. */
+export function transcriptPath(
+  agent: BoardAgent,
+  claudeRoot = process.env.MANGO_CLAUDE_PROJECTS ?? join(homedir(), ".claude", "projects"),
+  codexRoot = process.env.MANGO_CODEX_SESSIONS ?? join(homedir(), ".codex", "sessions"),
+): string | null {
+  if (agent.tool === "claude" && agent.cwd) return claudeTranscript(agent, claudeRoot);
+  if (agent.tool === "codex" && agent.session) return codexTranscript(agent, codexRoot);
+  return null;
+}
+
+/** ISO time the transcript was last written: the harness is active whether or not the agent ever called mango. */
+export function transcriptTouchedAt(agent: BoardAgent): string | null {
+  const path = transcriptPath(agent);
+  try { return path ? new Date(statSync(path).mtimeMs).toISOString() : null; } catch { return null; }
+}
+
 export function activityEvents(
   agents: BoardAgent[],
   claudeRoot = process.env.MANGO_CLAUDE_PROJECTS ?? join(homedir(), ".claude", "projects"),

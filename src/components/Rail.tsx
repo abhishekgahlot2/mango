@@ -1,10 +1,10 @@
-import { ago, agentKey, glyphFor, shortPath, type Agent, type Task } from "@/board";
+import { ago, agentKey, glyphFor, shortPath, shownStatus, type Agent, type Task } from "@/board";
 import { StatusPill } from "@/components/atoms/StatusPill";
 import { ValuePill } from "@/components/atoms/ValuePill";
 import { cn } from "@/lib/utils";
 import { AgentGlyph } from "./AgentGlyph";
 
-const TONE = { working: "green", blocked: "orange", idle: "neutral" } as const;
+const TONE = { active: "green", working: "green", blocked: "orange", idle: "neutral", ended: "neutral" } as const;
 
 /** Left rail: brand, repo filter, one neutral row per live agent, ended sessions collapsed, theme toggle. */
 export function Rail({ live, ended, tasks, repos, repo, colorOf, tags, tag, selected, now, dark, onSelect, onRepo, onTag, onTheme }: {
@@ -56,7 +56,7 @@ export function Rail({ live, ended, tasks, repos, repo, colorOf, tags, tag, sele
                     <span className="block truncate text-[13px] font-semibold">{a.tool} · {a.cwd.split("/").at(-1) || a.repo}</span>
                     <span className="block truncate font-mono text-[11px] text-ink-3">{a.name} · {ago(a.updated, now)}</span>
                   </span>
-                  <StatusPill tone={TONE[a.status]} className="shrink-0 h-5 text-[11px]">{a.status}</StatusPill>
+                  <StatusPill tone={TONE[shownStatus(a, now)]} className="shrink-0 h-5 text-[11px]">{shownStatus(a, now)}</StatusPill>
                 </span>
                 <span className="flex items-baseline gap-2 text-[12px]">
                   <span className={cn("min-w-0 truncate", t ? "text-ink-2" : "text-ink-3")}>{t ? t.title : "No open task"}</span>
